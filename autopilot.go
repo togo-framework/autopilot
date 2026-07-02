@@ -138,6 +138,8 @@ func (s *server) migrate(ctx context.Context) error {
 			branch TEXT NOT NULL DEFAULT '',
 			pr_url TEXT NOT NULL DEFAULT '',
 			result TEXT NOT NULL DEFAULT '',
+			priority TEXT NOT NULL DEFAULT 'normal',
+			human_only INTEGER NOT NULL DEFAULT 0,
 			created_by TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -155,6 +157,15 @@ func (s *server) migrate(ctx context.Context) error {
 		if _, err := db.ExecContext(ctx, q); err != nil {
 			return err
 		}
+	}
+	// Best-effort ALTERs so tables created before priority/human_only pick them up.
+	// (Errors — e.g. "column already exists", or SQLite's lack of IF NOT EXISTS — are
+	// expected and ignored.)
+	for _, alter := range []string{
+		`ALTER TABLE autopilot_issues ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'`,
+		`ALTER TABLE autopilot_issues ADD COLUMN human_only INTEGER NOT NULL DEFAULT 0`,
+	} {
+		_, _ = db.ExecContext(ctx, alter)
 	}
 	return nil
 }

@@ -83,7 +83,8 @@ func (r *runner) claimNextReady(ctx context.Context) (Issue, bool) {
 	}
 	// pick oldest ready
 	var id string
-	row := db.QueryRowContext(ctx, "SELECT id FROM autopilot_issues WHERE status="+ph(1)+" ORDER BY created_at ASC LIMIT 1", StatusReady)
+	// human_only issues are skipped — agents never touch them.
+	row := db.QueryRowContext(ctx, "SELECT id FROM autopilot_issues WHERE status="+ph(1)+" AND human_only=0 ORDER BY created_at ASC LIMIT 1", StatusReady)
 	if err := row.Scan(&id); err != nil {
 		return Issue{}, false
 	}

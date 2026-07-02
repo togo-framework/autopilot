@@ -23,6 +23,8 @@ type Issue struct {
 	Branch    string `json:"branch"`
 	PRURL     string `json:"pr_url"`
 	Result    string `json:"result"`
+	Priority  string `json:"priority"`
+	HumanOnly bool   `json:"human_only"`
 	CreatedBy string `json:"created_by"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -38,12 +40,14 @@ type Comment struct {
 	CreatedAt  string `json:"created_at"`
 }
 
-const issueCols = "id,title,body,status,kind,assignee,claimed_by,claimed_at,branch,pr_url,result,created_by,created_at,updated_at"
+const issueCols = "id,title,body,status,kind,assignee,claimed_by,claimed_at,branch,pr_url,result,priority,human_only,created_by,created_at,updated_at"
 
 func scanIssue(rs interface{ Scan(...any) error }) (Issue, error) {
 	var i Issue
+	var human int
 	err := rs.Scan(&i.ID, &i.Title, &i.Body, &i.Status, &i.Kind, &i.Assignee, &i.ClaimedBy,
-		&i.ClaimedAt, &i.Branch, &i.PRURL, &i.Result, &i.CreatedBy, &i.CreatedAt, &i.UpdatedAt)
+		&i.ClaimedAt, &i.Branch, &i.PRURL, &i.Result, &i.Priority, &human, &i.CreatedBy, &i.CreatedAt, &i.UpdatedAt)
+	i.HumanOnly = human != 0
 	return i, err
 }
 
@@ -90,11 +94,18 @@ func (s *server) insertIssue(ctx context.Context, i Issue) error {
 	if db == nil {
 		return sql.ErrConnDone
 	}
+	human := 0
+	if i.HumanOnly {
+		human = 1
+	}
+	if i.Priority == "" {
+		i.Priority = "normal"
+	}
 	_, err := db.ExecContext(ctx,
 		"INSERT INTO autopilot_issues ("+issueCols+") VALUES ("+
-			ph(1)+","+ph(2)+","+ph(3)+","+ph(4)+","+ph(5)+","+ph(6)+","+ph(7)+","+ph(8)+","+ph(9)+","+ph(10)+","+ph(11)+","+ph(12)+","+ph(13)+","+ph(14)+")",
+			ph(1)+","+ph(2)+","+ph(3)+","+ph(4)+","+ph(5)+","+ph(6)+","+ph(7)+","+ph(8)+","+ph(9)+","+ph(10)+","+ph(11)+","+ph(12)+","+ph(13)+","+ph(14)+","+ph(15)+","+ph(16)+")",
 		i.ID, i.Title, i.Body, i.Status, i.Kind, i.Assignee, i.ClaimedBy, i.ClaimedAt,
-		i.Branch, i.PRURL, i.Result, i.CreatedBy, i.CreatedAt, i.UpdatedAt)
+		i.Branch, i.PRURL, i.Result, i.Priority, human, i.CreatedBy, i.CreatedAt, i.UpdatedAt)
 	return err
 }
 
@@ -167,7 +178,8 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title, Body, Kind, Assignee, CreatedBy, Status string
+		Title, Body, Kind, Assignee, CreatedBy, Status, Priority string
+		HumanOnly                                                bool
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, err.Error())
@@ -180,7 +192,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	i := Issue{
 		ID: genID(), Title: strings.TrimSpace(body.Title), Body: body.Body,
 		Status: firstNonEmpty(body.Status, StatusBacklog), Kind: firstNonEmpty(body.Kind, "feature"),
-		Assignee: body.Assignee, CreatedBy: firstNonEmpty(body.CreatedBy, "human"),
+		Assignee: body.Assignee, Priority: firstNonEmpty(body.Priority, "normal"), HumanOnly: body.HumanOnly,
+		CreatedBy: firstNonEmpty(body.CreatedBy, "human"),
 		CreatedAt: nowStr(), UpdatedAt: nowStr(),
 	}
 	if !validStatus(i.Status) {
@@ -203,7 +216,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Title, Body, Kind, Assignee *string
+		Title, Body, Kind, Assignee, Priority *string
+		HumanOnly                             *bool
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, err.Error())
@@ -222,9 +236,22 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if body.Assignee != nil {
 		fields["assignee"] = *body.Assignee
 	}
+	if body.Priority != nil {
+		fields["priority"] = *body.Priority
+	}
 	if err := s.setIssueStatus(r.Context(), id, cur.Status, fields); err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	// human_only is an INTEGER column → set it with an int param (not the string fields map).
+	if body.HumanOnly != nil {
+		if db, ph := s.db(r.Context()); db != nil {
+			v := 0
+			if *body.HumanOnly {
+				v = 1
+			}
+			_, _ = db.ExecContext(r.Context(), "UPDATE autopilot_issues SET human_only="+ph(1)+" WHERE id="+ph(2), v, id)
+		}
 	}
 	updated, _ := s.getIssueByID(r.Context(), id)
 	s.emit("issue.updated", map[string]any{"id": id})
