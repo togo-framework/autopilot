@@ -38,6 +38,8 @@ func (s *server) serveJS(w http.ResponseWriter, path string) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=300")
+	// no-cache = the browser revalidates every load, so an updated SDK never
+	// serves stale (it's tiny; a 304 when unchanged keeps it cheap).
+	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(b)
 }
