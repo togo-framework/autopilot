@@ -55,6 +55,16 @@ func init() {
 		}
 		s.mount(k.Router)
 
+		// Self-healing (opt-in): an outer middleware that auto-files a bug issue on
+		// panic/5xx. Uses UseMiddleware (togo >= v0.21.0), applied at serve time so
+		// chi's "middleware before routes" rule is never violated.
+		if envBool("AUTOPILOT_SELF_HEAL") {
+			k.UseMiddleware(s.selfHealMiddleware())
+			if k.Log != nil {
+				k.Log.Info("autopilot: self-healing enabled (panics/5xx -> bug issues)")
+			}
+		}
+
 		// The runner is opt-in (it shells out to Claude Code + git). Off by default.
 		if os.Getenv("AUTOPILOT_RUNNER") == "1" {
 			r := newRunner(s)
@@ -168,6 +178,8 @@ func env(k, def string) string {
 	}
 	return def
 }
+
+func envBool(k string) bool { return os.Getenv(k) == "1" }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
