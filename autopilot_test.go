@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -167,5 +168,59 @@ func TestHumanCommentUnblocks(t *testing.T) {
 	got, _ := s.getIssueByID(context.Background(), i.ID)
 	if got.Status != StatusReady {
 		t.Fatalf("human comment on blocked issue should unblock -> ready, got %q", got.Status)
+	}
+}
+
+func TestPriorityAndHumanOnlyPersist(t *testing.T) {
+	s := newTestServer(t)
+
+	// create with priority + human_only (regression: underscore JSON keys need tags)
+	body, _ := json.Marshal(map[string]any{"title": "guarded", "kind": "bug", "priority": "high", "human_only": true})
+	req := httptest.NewRequest("POST", "/api/autopilot/issues", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.createIssue(w, req)
+	if w.Code != 201 {
+		t.Fatalf("createIssue code = %d", w.Code)
+	}
+	var created Issue
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	if created.Priority != "high" || !created.HumanOnly {
+		t.Fatalf("create did not persist priority/human_only: %+v", created)
+	}
+
+	// patch priority -> critical, human_only -> false
+	pb, _ := json.Marshal(map[string]any{"priority": "critical", "human_only": false})
+	preq := httptest.NewRequest("PATCH", "/api/autopilot/issues/"+created.ID, bytes.NewReader(pb))
+	rc := chi.NewRouteContext()
+	rc.URLParams.Add("id", created.ID)
+	preq = preq.WithContext(context.WithValue(preq.Context(), chi.RouteCtxKey, rc))
+	pw := httptest.NewRecorder()
+	s.patchIssue(pw, preq)
+	if pw.Code != 200 {
+		t.Fatalf("patchIssue code = %d", pw.Code)
+	}
+	got, _ := s.getIssueByID(context.Background(), created.ID)
+	if got.Priority != "critical" || got.HumanOnly {
+		t.Fatalf("patch did not persist priority/human_only: %+v", got)
+	}
+}
+
+func TestRunnerSkipsHumanOnly(t *testing.T) {
+	s := newTestServer(t)
+	// a human-only ready issue (must be skipped) + a normal ready issue
+	guarded := Issue{ID: genID(), Title: "human only", Status: StatusReady, Kind: "bug", HumanOnly: true, CreatedAt: nowStr(), UpdatedAt: nowStr()}
+	if err := s.insertIssue(context.Background(), guarded); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1 * time.Millisecond)
+	normal := seedReady(t, s, "agent ok")
+
+	r := testRunner(s, t.TempDir(), fakeImpl{})
+	claimed, ok := r.claimNextReady(context.Background())
+	if !ok {
+		t.Fatal("expected to claim the non-human-only issue")
+	}
+	if claimed.ID != normal.ID {
+		t.Fatalf("runner claimed the wrong issue: got %q, want the non-human-only %q", claimed.ID, normal.ID)
 	}
 }

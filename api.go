@@ -178,8 +178,14 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Title, Body, Kind, Assignee, CreatedBy, Status, Priority string
-		HumanOnly                                                bool
+		Title     string `json:"title"`
+		Body      string `json:"body"`
+		Kind      string `json:"kind"`
+		Assignee  string `json:"assignee"`
+		CreatedBy string `json:"created_by"`
+		Status    string `json:"status"`
+		Priority  string `json:"priority"`
+		HumanOnly bool   `json:"human_only"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, err.Error())
@@ -216,8 +222,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Title, Body, Kind, Assignee, Priority *string
-		HumanOnly                             *bool
+		Title     *string `json:"title"`
+		Body      *string `json:"body"`
+		Kind      *string `json:"kind"`
+		Assignee  *string `json:"assignee"`
+		Priority  *string `json:"priority"`
+		HumanOnly *bool   `json:"human_only"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, err.Error())
