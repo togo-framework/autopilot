@@ -58,7 +58,16 @@
           if (open > 0) { countEl.textContent = open; countEl.style.display = ""; } else { countEl.style.display = "none"; }
         }).catch(function () {});
       };
-      refresh(); setInterval(refresh, 15000);
+      refresh(); setInterval(refresh, 30000); // fallback; WS drives live updates
+      (function connectWS() {
+        try {
+          var proto = location.protocol === "https:" ? "wss:" : "ws:";
+          var ws = new WebSocket(proto + "//" + location.host + api + "/ws");
+          ws.onmessage = function () { refresh(); };
+          ws.onclose = function () { setTimeout(connectWS, 3000); };
+          ws.onerror = function () { try { ws.close(); } catch (e) {} };
+        } catch (e) {}
+      })();
     }
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();

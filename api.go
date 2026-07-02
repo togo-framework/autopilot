@@ -191,6 +191,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.emit("issue.created", map[string]any{"id": i.ID, "status": i.Status, "kind": i.Kind, "title": i.Title})
 	writeJSON(w, 201, i)
 }
 
@@ -226,6 +227,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, _ := s.getIssueByID(r.Context(), id)
+	s.emit("issue.updated", map[string]any{"id": id})
 	writeJSON(w, 200, updated)
 }
 
@@ -254,6 +256,7 @@ func (s *server) setStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i, _ := s.getIssueByID(r.Context(), id)
+	s.emit("issue.status", map[string]any{"id": id, "status": body.Status})
 	writeJSON(w, 200, i)
 }
 
@@ -287,10 +290,12 @@ func (s *server) addComment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.emit("comment.added", map[string]any{"issue_id": id, "author_kind": kind})
 	unblocked := false
 	if kind == "human" && issue.Status == StatusBlocked {
 		if err := s.setIssueStatus(r.Context(), id, StatusReady, map[string]string{"claimed_by": "", "claimed_at": ""}); err == nil {
 			unblocked = true
+			s.emit("issue.status", map[string]any{"id": id, "status": StatusReady})
 		}
 	}
 	writeJSON(w, 201, map[string]any{"comment": c, "unblocked": unblocked})
@@ -322,6 +327,7 @@ func (s *server) submitFeedback(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	s.emit("issue.created", map[string]any{"id": i.ID, "status": i.Status, "kind": "feedback", "title": i.Title})
 	writeJSON(w, 201, map[string]any{"ok": true, "id": i.ID})
 }
 

@@ -43,7 +43,7 @@ func init() {
 		if k.Router == nil {
 			return nil
 		}
-		s := &server{k: k}
+		s := &server{k: k, hub: newHub()}
 		if a, ok := auth.FromKernel(k); ok {
 			s.auth = a
 		}
@@ -83,6 +83,8 @@ type server struct {
 	// testDB, when set, bypasses the kernel so the store/runner are unit-testable
 	// against an in-memory SQLite DB (uses "?" placeholders).
 	testDB *sql.DB
+	// hub fans real-time events (issue/comment changes) to WebSocket clients.
+	hub *hub
 }
 
 func (s *server) mount(r chi.Router) {
@@ -99,6 +101,8 @@ func (s *server) mount(r chi.Router) {
 		r.Post("/issues/{id}/status", s.setStatus)
 		r.Get("/issues/{id}/comments", s.listComments)
 		r.Post("/issues/{id}/comments", s.addComment)
+		// Real-time event stream (new issue, status move, new comment, …).
+		r.Get("/ws", s.serveWS)
 	})
 
 	// Feedback SDK ingress — intentionally unauthenticated so a "feedback button

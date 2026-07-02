@@ -131,7 +131,17 @@ async function addComment(id){
   await j("POST","/issues/"+id+"/comments",{author:"human",author_kind:"human",body});
   load();
 }
-load(); setInterval(load, 5000);
+load();
+setInterval(load, 15000); // fallback poll; the WebSocket drives live updates
+(function connectWS(){
+  try {
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    var ws = new WebSocket(proto + "//" + location.host + API + "/ws");
+    ws.onmessage = function(e){ try { if (JSON.parse(e.data).type !== "hello") load(); } catch(_) { load(); } };
+    ws.onclose = function(){ setTimeout(connectWS, 3000); };
+    ws.onerror = function(){ try { ws.close(); } catch(_){} };
+  } catch(e) {}
+})();
 </script>
 </body>
 </html>

@@ -97,6 +97,7 @@ func (r *runner) claimNextReady(ctx context.Context) (Issue, bool) {
 	if n, _ := res.RowsAffected(); n != 1 {
 		return Issue{}, false // someone else grabbed it
 	}
+	r.s.emit("issue.status", map[string]any{"id": id, "status": StatusInProgress, "agent": r.agentID})
 	return r.s.getIssueByID(ctx, id)
 }
 
@@ -106,19 +107,19 @@ func (r *runner) process(ctx context.Context, issue Issue) {
 	result := r.impl.Implement(ctx, r.workdir, issue)
 
 	if result.NeedsInput {
-		_ = r.s.setIssueStatus(ctx, issue.ID, StatusBlocked, nil)
+		r.setStatus(ctx, issue.ID, StatusBlocked, nil)
 		r.comment(ctx, issue.ID, "🚧 **Blocked — need a human decision:**\n\n"+result.Reason+"\n\n_Reply with a comment to unblock; I'll pick it back up._")
 		return
 	}
 	if !result.Changed {
-		_ = r.s.setIssueStatus(ctx, issue.ID, StatusBlocked, nil)
+		r.setStatus(ctx, issue.ID, StatusBlocked, nil)
 		r.comment(ctx, issue.ID, "🚧 **Blocked — no changes produced.**\n\n"+result.Reason+result.Summary)
 		return
 	}
 
 	branch := "autopilot/issue-" + shortID(issue.ID)
 	if err := r.commitBranch(ctx, branch, issue); err != nil {
-		_ = r.s.setIssueStatus(ctx, issue.ID, StatusBlocked, nil)
+		r.setStatus(ctx, issue.ID, StatusBlocked, nil)
 		r.comment(ctx, issue.ID, "🚧 **Blocked — git failed:** "+err.Error())
 		return
 	}
@@ -135,12 +136,19 @@ func (r *runner) process(ctx context.Context, issue Issue) {
 	} else {
 		prMsg = "\n\n_(local branch only — set AUTOPILOT_PUSH=1 to open a PR)_"
 	}
-	_ = r.s.setIssueStatus(ctx, issue.ID, StatusInReview, fields)
+	r.setStatus(ctx, issue.ID, StatusInReview, fields)
 	r.comment(ctx, issue.ID, "✅ **Implemented on branch `"+branch+"`.**\n\n"+result.Summary+prMsg+"\n\n_Moved to review._")
 }
 
 func (r *runner) comment(ctx context.Context, issueID, body string) {
 	_ = r.s.insertComment(ctx, Comment{ID: genID(), IssueID: issueID, Author: r.agentID, AuthorKind: "agent", Body: body, CreatedAt: nowStr()})
+	r.s.emit("comment.added", map[string]any{"issue_id": issueID, "author_kind": "agent", "author": r.agentID})
+}
+
+// setStatus updates the issue status and broadcasts the move.
+func (r *runner) setStatus(ctx context.Context, id, status string, fields map[string]string) {
+	_ = r.s.setIssueStatus(ctx, id, status, fields)
+	r.s.emit("issue.status", map[string]any{"id": id, "status": status})
 }
 
 // ---- git ----

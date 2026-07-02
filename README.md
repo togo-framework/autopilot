@@ -67,6 +67,14 @@ The agent is instructed to either edit files, or — if it can't proceed without
 a human decision — make no changes and reply `BLOCKED: <question>`, which routes
 the issue to `blocked`.
 
+## Real-time (WebSocket)
+
+`GET /api/autopilot/ws` streams live events so the board + launcher update
+instantly (no polling): `issue.created`, `issue.status` (moves, incl. an agent
+claiming → `in_progress`), `issue.updated`, `comment.added`. Self-contained (own
+WS hub — no dependency on the realtime plugin). Behind a dev proxy, enable WS
+upgrade for `/api` (`ws: true`).
+
 ## Board (Mission Control)
 
 A self-contained board ships with the plugin — no build step. Open **`/autopilot`**
