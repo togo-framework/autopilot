@@ -95,6 +95,18 @@ It injects a floating button; submissions `POST /api/autopilot/feedback` and lan
 as `feedback` issues on the board. It also exposes `window.AutopilotFeedback`
 (`open`, `close`, `submit`) so a framework component can drive it.
 
+## Autopilot SDK — launcher + push notifications
+
+`<script src="/autopilot/sdk.js" defer></script>` adds a floating launcher (opens
+the board as an overlay) **and a built-in notification system**: it subscribes to
+the WebSocket and surfaces every event as a **clickable toast** — new issue,
+status move, `agent started`, **blocked (needs your input)**, ready for review,
+new comment — each typed/colored by severity, with an **unread pip** on the
+launcher. Clicking a toast opens the board **deep-linked to that issue**
+(`/autopilot?issue=<id>`) so you can follow up in one click. `window.Autopilot`
+exposes `open`/`openTo`/`close`/`toggle`/`notify`; `data-toasts="off"` disables
+the toasts.
+
 ## Security
 
 The runner executes Claude Code with file-edit permission and can push branches,

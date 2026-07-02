@@ -256,7 +256,7 @@ func (s *server) setStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i, _ := s.getIssueByID(r.Context(), id)
-	s.emit("issue.status", map[string]any{"id": id, "status": body.Status})
+	s.emit("issue.status", map[string]any{"id": id, "status": body.Status, "title": i.Title})
 	writeJSON(w, 200, i)
 }
 
@@ -290,12 +290,12 @@ func (s *server) addComment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	s.emit("comment.added", map[string]any{"issue_id": id, "author_kind": kind})
+	s.emit("comment.added", map[string]any{"issue_id": id, "author_kind": kind, "title": issue.Title})
 	unblocked := false
 	if kind == "human" && issue.Status == StatusBlocked {
 		if err := s.setIssueStatus(r.Context(), id, StatusReady, map[string]string{"claimed_by": "", "claimed_at": ""}); err == nil {
 			unblocked = true
-			s.emit("issue.status", map[string]any{"id": id, "status": StatusReady})
+			s.emit("issue.status", map[string]any{"id": id, "status": StatusReady, "title": issue.Title})
 		}
 	}
 	writeJSON(w, 201, map[string]any{"comment": c, "unblocked": unblocked})

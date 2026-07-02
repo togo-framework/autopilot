@@ -132,6 +132,8 @@ async function addComment(id){
   load();
 }
 load();
+// Deep-link: /autopilot?issue=<id> opens that issue (used by notification clicks).
+(function(){ var q = new URLSearchParams(location.search).get("issue"); if (q) setTimeout(function(){ openDrawer(q); }, 450); })();
 setInterval(load, 15000); // fallback poll; the WebSocket drives live updates
 (function connectWS(){
   try {
