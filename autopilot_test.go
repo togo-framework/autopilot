@@ -1,4 +1,4 @@
-package agentloop
+package autopilot
 
 import (
 	"bytes"
@@ -153,7 +153,7 @@ func TestHumanCommentUnblocks(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]string{"author": "fady", "author_kind": "human", "body": "use postgres"})
-	req := httptest.NewRequest("POST", "/api/agent-loop/issues/"+i.ID+"/comments", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/api/autopilot/issues/"+i.ID+"/comments", bytes.NewReader(body))
 	rc := chi.NewRouteContext()
 	rc.URLParams.Add("id", i.ID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rc))

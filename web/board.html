@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Autopilot — Mission Control</title>
+<style>
+  :root{--bg:#0b0e13;--panel:#141a21;--border:#1d2530;--fg:#e8eef2;--muted:#8aa;--accent:#2C7BE2;--ok:#22C55E;--warn:#f5a623;--block:#e5484d}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+  header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--border)}
+  header b{font-size:15px} header .sub{color:var(--muted);font-size:12px}
+  header .grow{flex:1}
+  button{font:inherit;padding:7px 12px;border-radius:8px;border:1px solid #2a3340;background:transparent;color:var(--fg);cursor:pointer}
+  button.primary{background:var(--accent);border-color:var(--accent)}
+  button:hover{filter:brightness(1.15)}
+  input,textarea,select{font:inherit;background:var(--bg);color:var(--fg);border:1px solid #2a3340;border-radius:8px;padding:8px 10px;width:100%}
+  .board{display:grid;grid-template-columns:repeat(6,minmax(180px,1fr));gap:12px;padding:16px;overflow-x:auto}
+  .col{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:10px;min-height:120px}
+  .col h3{margin:2px 4px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+  .col h3 .n{color:var(--fg);opacity:.6}
+  .card{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px;cursor:pointer}
+  .card:hover{border-color:var(--accent)}
+  .card .t{font-size:13px;font-weight:600;line-height:1.3}
+  .card .m{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+  .tag{font-size:10px;padding:2px 7px;border-radius:20px;background:#1d2530;color:var(--muted)}
+  .tag.feedback{background:#3a2a10;color:var(--warn)} .tag.bug{background:#3a1416;color:var(--block)}
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:stretch;justify-content:flex-end}
+  .overlay.on{display:flex}
+  .drawer{width:min(560px,100%);background:var(--panel);border-left:1px solid var(--border);padding:20px;overflow:auto}
+  .drawer h2{margin:0 0 4px;font-size:18px} .drawer .id{color:var(--muted);font-size:11px;font-family:monospace}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+  .comment{border:1px solid var(--border);border-radius:10px;padding:10px;margin:8px 0}
+  .comment .who{font-size:11px;color:var(--muted);margin-bottom:4px}
+  .comment.agent{border-color:#1e3a5f} .comment .who b.agent{color:var(--accent)}
+  .status{display:inline-block;font-size:11px;padding:3px 9px;border-radius:20px;border:1px solid #2a3340}
+  .status.blocked{color:var(--block);border-color:var(--block)} .status.in_review{color:var(--warn);border-color:var(--warn)}
+  .status.done{color:var(--ok);border-color:var(--ok)}
+  .new{display:none;padding:16px;background:var(--panel);border-bottom:1px solid var(--border)}
+  .new.on{display:block} .new .grid{display:grid;gap:8px;max-width:640px}
+  pre{white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:12px}
+  .muted{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <b>🛰️ Autopilot</b><span class="sub">Mission Control · Issues → Agent → Code</span>
+  <span class="grow"></span>
+  <button class="primary" onclick="toggleNew()">+ New issue</button>
+  <button onclick="load()">↻</button>
+</header>
+
+<div class="new" id="new">
+  <div class="grid">
+    <input id="n-title" placeholder="Title — e.g. Add a /health endpoint"/>
+    <textarea id="n-body" rows="3" placeholder="Describe the change the agent should make…"></textarea>
+    <div class="row">
+      <select id="n-kind" style="width:auto"><option>feature</option><option>bug</option><option>chore</option></select>
+      <label class="muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="n-ready" style="width:auto"/> hand to agents now</label>
+      <span class="grow"></span>
+      <button class="primary" onclick="create()">Create</button>
+      <button onclick="toggleNew()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="board" id="board"></div>
+
+<div class="overlay" id="overlay" onclick="if(event.target.id==='overlay')closeDrawer()">
+  <div class="drawer" id="drawer"></div>
+</div>
+
+<script>
+const API = "/api/autopilot";
+const COLS = [["backlog","Backlog"],["ready","Ready"],["in_progress","In progress"],["blocked","Blocked"],["in_review","In review"],["done","Done"]];
+let ISSUES = [], OPEN = null;
+
+async function j(method, path, body){
+  const r = await fetch(API+path, {method, credentials:"include", headers:{"Content-Type":"application/json"}, body: body?JSON.stringify(body):undefined});
+  if(!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.status);
+  return r.json();
+}
+function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+
+async function load(){
+  try{ ISSUES = await j("GET","/issues"); }catch(e){ document.getElementById("board").innerHTML = '<div class="muted" style="padding:20px">Not authorized or API unavailable: '+esc(e.message)+'</div>'; return; }
+  render();
+  if(OPEN){ const cur = ISSUES.find(i=>i.id===OPEN); if(cur) openDrawer(cur.id); }
+}
+function render(){
+  document.getElementById("board").innerHTML = COLS.map(([s,label])=>{
+    const items = ISSUES.filter(i=>i.status===s);
+    return `<div class="col"><h3>${label} <span class="n">${items.length}</span></h3>`+
+      items.map(i=>`<div class="card" onclick="openDrawer('${i.id}')"><div class="t">${esc(i.title)}</div>
+        <div class="m"><span class="tag ${i.kind}">${i.kind}</span>${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.branch?`<span class="tag">⎇ ${esc(i.branch.split("/").pop())}</span>`:""}</div></div>`).join("")+
+      `</div>`;
+  }).join("");
+}
+function toggleNew(){ document.getElementById("new").classList.toggle("on"); }
+async function create(){
+  const title=document.getElementById("n-title").value.trim(); if(!title)return;
+  const body=document.getElementById("n-body").value, kind=document.getElementById("n-kind").value;
+  const status=document.getElementById("n-ready").checked?"ready":"backlog";
+  await j("POST","/issues",{title,body,kind,status,created_by:"human"});
+  document.getElementById("n-title").value=""; document.getElementById("n-body").value=""; toggleNew(); load();
+}
+async function openDrawer(id){
+  OPEN=id;
+  const {issue, comments} = await j("GET","/issues/"+id);
+  const acts = [];
+  if(issue.status==="backlog") acts.push(`<button class="primary" onclick="setStatus('${id}','ready')">Hand to agents →</button>`);
+  if(issue.status==="ready") acts.push(`<button onclick="setStatus('${id}','backlog')">Return to backlog</button>`);
+  if(issue.status==="in_review"){ acts.push(`<button class="primary" onclick="setStatus('${id}','done')">Accept ✓</button>`); acts.push(`<button onclick="setStatus('${id}','ready')">Re-run</button>`); }
+  if(issue.status==="blocked") acts.push(`<span class="muted">Reply below to unblock →</span>`);
+  document.getElementById("drawer").innerHTML =
+    `<div class="row" style="justify-content:space-between"><span class="status ${issue.status}">${issue.status}</span><button onclick="closeDrawer()">✕</button></div>
+     <h2>${esc(issue.title)}</h2><div class="id">${issue.id}${issue.pr_url?` · <a href="${esc(issue.pr_url)}" target="_blank" style="color:var(--accent)">PR</a>`:""}</div>
+     ${issue.body?`<pre>${esc(issue.body)}</pre>`:""}
+     <div class="row">${acts.join("")}</div>
+     ${issue.result?`<div class="muted" style="font-size:12px">Last agent result:</div><pre>${esc(issue.result)}</pre>`:""}
+     <h3 style="font-size:13px;margin:16px 0 4px">Thread</h3>
+     <div id="thread">${comments.map(c=>`<div class="comment ${c.author_kind}"><div class="who"><b class="${c.author_kind}">${esc(c.author)}</b> · ${c.author_kind} · ${esc(c.created_at)}</div><div>${esc(c.body).replace(/\\n/g,"<br>")}</div></div>`).join("")||'<div class="muted">No comments yet.</div>'}</div>
+     <div class="row"><textarea id="c-body" rows="2" placeholder="${issue.status==="blocked"?"Answer to unblock the agent…":"Add a comment…"}"></textarea></div>
+     <div class="row"><button class="primary" onclick="addComment('${id}')">Comment${issue.status==="blocked"?" & unblock":""}</button></div>`;
+  document.getElementById("overlay").classList.add("on");
+}
+function closeDrawer(){ OPEN=null; document.getElementById("overlay").classList.remove("on"); }
+async function setStatus(id,status){ await j("POST","/issues/"+id+"/status",{status}); load(); }
+async function addComment(id){
+  const body=document.getElementById("c-body").value.trim(); if(!body)return;
+  await j("POST","/issues/"+id+"/comments",{author:"human",author_kind:"human",body});
+  load();
+}
+load(); setInterval(load, 5000);
+</script>
+</body>
+</html>

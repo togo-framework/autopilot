@@ -1,4 +1,4 @@
-package agentloop
+package autopilot
 
 import (
 	"context"
@@ -54,7 +54,7 @@ func (s *server) getIssueByID(ctx context.Context, id string) (Issue, bool) {
 	if db == nil {
 		return Issue{}, false
 	}
-	row := db.QueryRowContext(ctx, "SELECT "+issueCols+" FROM agentloop_issues WHERE id="+ph(1), id)
+	row := db.QueryRowContext(ctx, "SELECT "+issueCols+" FROM autopilot_issues WHERE id="+ph(1), id)
 	i, err := scanIssue(row)
 	return i, err == nil
 }
@@ -65,7 +65,7 @@ func (s *server) listIssuesBy(ctx context.Context, status string) []Issue {
 	if db == nil {
 		return out
 	}
-	q := "SELECT " + issueCols + " FROM agentloop_issues"
+	q := "SELECT " + issueCols + " FROM autopilot_issues"
 	args := []any{}
 	if status != "" {
 		q += " WHERE status=" + ph(1)
@@ -91,7 +91,7 @@ func (s *server) insertIssue(ctx context.Context, i Issue) error {
 		return sql.ErrConnDone
 	}
 	_, err := db.ExecContext(ctx,
-		"INSERT INTO agentloop_issues ("+issueCols+") VALUES ("+
+		"INSERT INTO autopilot_issues ("+issueCols+") VALUES ("+
 			ph(1)+","+ph(2)+","+ph(3)+","+ph(4)+","+ph(5)+","+ph(6)+","+ph(7)+","+ph(8)+","+ph(9)+","+ph(10)+","+ph(11)+","+ph(12)+","+ph(13)+","+ph(14)+")",
 		i.ID, i.Title, i.Body, i.Status, i.Kind, i.Assignee, i.ClaimedBy, i.ClaimedAt,
 		i.Branch, i.PRURL, i.Result, i.CreatedBy, i.CreatedAt, i.UpdatedAt)
@@ -113,7 +113,7 @@ func (s *server) setIssueStatus(ctx context.Context, id, status string, fields m
 		n++
 	}
 	args = append(args, id)
-	_, err := db.ExecContext(ctx, "UPDATE agentloop_issues SET "+set+" WHERE id="+ph(n), args...)
+	_, err := db.ExecContext(ctx, "UPDATE autopilot_issues SET "+set+" WHERE id="+ph(n), args...)
 	return err
 }
 
@@ -123,7 +123,7 @@ func (s *server) insertComment(ctx context.Context, c Comment) error {
 		return sql.ErrConnDone
 	}
 	_, err := db.ExecContext(ctx,
-		"INSERT INTO agentloop_comments (id,issue_id,author,author_kind,body,created_at) VALUES ("+
+		"INSERT INTO autopilot_comments (id,issue_id,author,author_kind,body,created_at) VALUES ("+
 			ph(1)+","+ph(2)+","+ph(3)+","+ph(4)+","+ph(5)+","+ph(6)+")",
 		c.ID, c.IssueID, c.Author, c.AuthorKind, c.Body, c.CreatedAt)
 	return err
@@ -136,7 +136,7 @@ func (s *server) commentsFor(ctx context.Context, issueID string) []Comment {
 		return out
 	}
 	rows, err := db.QueryContext(ctx,
-		"SELECT id,issue_id,author,author_kind,body,created_at FROM agentloop_comments WHERE issue_id="+ph(1)+" ORDER BY created_at ASC", issueID)
+		"SELECT id,issue_id,author,author_kind,body,created_at FROM autopilot_comments WHERE issue_id="+ph(1)+" ORDER BY created_at ASC", issueID)
 	if err != nil {
 		return out
 	}

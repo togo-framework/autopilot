@@ -1,4 +1,4 @@
-// Package agentloop is togo's Issues -> Agent -> Code -> Deploy loop.
+// Package autopilot is togo's Issues -> Agent -> Code -> Deploy loop.
 //
 // Humans (and agents) file issues; an in-app runner claims "ready" issues,
 // invokes Claude Code headless in the project working tree to implement them,
@@ -7,9 +7,9 @@
 // reply flips it back to "ready" to unblock. Issues + comments live in the app
 // DB (hybrid: an optional one-way GitHub mirror can be layered on top).
 //
-// Mounted under /api/agent-loop/*. The runner only starts when AGENTLOOP_RUNNER=1
+// Mounted under /api/autopilot/*. The runner only starts when AUTOPILOT_RUNNER=1
 // so the API can be used (and the board browsed) without an agent running.
-package agentloop
+package autopilot
 
 import (
 	"context"
@@ -39,7 +39,7 @@ const (
 func init() {
 	// PriorityLate+30: mount after every plugin + auth middleware (chi requires
 	// middleware before routes).
-	togo.RegisterProviderFunc("agent-loop", togo.PriorityLate+30, func(k *togo.Kernel) error {
+	togo.RegisterProviderFunc("autopilot", togo.PriorityLate+30, func(k *togo.Kernel) error {
 		if k.Router == nil {
 			return nil
 		}
@@ -49,18 +49,18 @@ func init() {
 		}
 		if err := s.migrate(context.Background()); err != nil {
 			if k.Log != nil {
-				k.Log.Error("agent-loop: migrate failed", "err", err)
+				k.Log.Error("autopilot: migrate failed", "err", err)
 			}
 			return nil // don't take the app down; the board just won't work
 		}
 		s.mount(k.Router)
 
 		// The runner is opt-in (it shells out to Claude Code + git). Off by default.
-		if os.Getenv("AGENTLOOP_RUNNER") == "1" {
+		if os.Getenv("AUTOPILOT_RUNNER") == "1" {
 			r := newRunner(s)
 			go r.loop(context.Background())
 			if k.Log != nil {
-				k.Log.Info("agent-loop: runner started", "workdir", r.workdir, "push", r.push)
+				k.Log.Info("autopilot: runner started", "workdir", r.workdir, "push", r.push)
 			}
 		}
 		return nil
@@ -76,7 +76,7 @@ type server struct {
 }
 
 func (s *server) mount(r chi.Router) {
-	r.Route("/api/agent-loop", func(r chi.Router) {
+	r.Route("/api/autopilot", func(r chi.Router) {
 		// Guard with the auth session when the auth plugin is present. The
 		// Feedback SDK's public submit endpoint is mounted separately below.
 		if s.auth != nil {
@@ -94,7 +94,13 @@ func (s *server) mount(r chi.Router) {
 	// Feedback SDK ingress — intentionally unauthenticated so a "feedback button
 	// everywhere" (including logged-out surfaces) can file an issue. Rate/spam
 	// controls are a later hardening step.
-	r.Post("/api/agent-loop/feedback", s.submitFeedback)
+	r.Post("/api/autopilot/feedback", s.submitFeedback)
+
+	// Self-contained Mission Control board + the drop-in Feedback SDK widget.
+	// Served at the root (not /api) so the HTML shell + script load without a
+	// session; their data calls remain auth-guarded above.
+	r.Get("/autopilot", s.serveBoard)
+	r.Get("/autopilot/feedback.js", s.serveFeedbackJS)
 }
 
 // ---- schema (idempotent; dialect-portable TEXT/INTEGER) ----
@@ -105,7 +111,7 @@ func (s *server) migrate(ctx context.Context) error {
 		return nil
 	}
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS agentloop_issues (
+		`CREATE TABLE IF NOT EXISTS autopilot_issues (
 			id TEXT PRIMARY KEY,
 			title TEXT NOT NULL,
 			body TEXT NOT NULL DEFAULT '',
@@ -121,7 +127,7 @@ func (s *server) migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS agentloop_comments (
+		`CREATE TABLE IF NOT EXISTS autopilot_comments (
 			id TEXT PRIMARY KEY,
 			issue_id TEXT NOT NULL,
 			author TEXT NOT NULL DEFAULT '',

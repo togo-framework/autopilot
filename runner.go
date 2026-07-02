@@ -1,4 +1,4 @@
-package agentloop
+package autopilot
 
 import (
 	"bytes"
@@ -37,19 +37,19 @@ type runner struct {
 }
 
 func newRunner(s *server) *runner {
-	poll, _ := strconv.Atoi(env("AGENTLOOP_POLL_SECONDS", "15"))
+	poll, _ := strconv.Atoi(env("AUTOPILOT_POLL_SECONDS", "15"))
 	if poll < 3 {
 		poll = 3
 	}
 	return &runner{
 		s:        s,
-		workdir:  env("AGENTLOOP_WORKDIR", "."),
+		workdir:  env("AUTOPILOT_WORKDIR", "."),
 		poll:     time.Duration(poll) * time.Second,
-		push:     os.Getenv("AGENTLOOP_PUSH") == "1",
-		agentID:  env("AGENTLOOP_AGENT_ID", "togo-agent"),
-		gitName:  env("AGENTLOOP_COMMIT_NAME", "togo agent"),
-		gitEmail: env("AGENTLOOP_COMMIT_EMAIL", "agent@togo.dev"),
-		impl:     &ClaudeExecutor{bin: env("AGENTLOOP_CLAUDE_BIN", "claude")},
+		push:     os.Getenv("AUTOPILOT_PUSH") == "1",
+		agentID:  env("AUTOPILOT_AGENT_ID", "togo-agent"),
+		gitName:  env("AUTOPILOT_COMMIT_NAME", "togo agent"),
+		gitEmail: env("AUTOPILOT_COMMIT_EMAIL", "agent@togo.dev"),
+		impl:     &ClaudeExecutor{bin: env("AUTOPILOT_CLAUDE_BIN", "claude")},
 	}
 }
 
@@ -83,13 +83,13 @@ func (r *runner) claimNextReady(ctx context.Context) (Issue, bool) {
 	}
 	// pick oldest ready
 	var id string
-	row := db.QueryRowContext(ctx, "SELECT id FROM agentloop_issues WHERE status="+ph(1)+" ORDER BY created_at ASC LIMIT 1", StatusReady)
+	row := db.QueryRowContext(ctx, "SELECT id FROM autopilot_issues WHERE status="+ph(1)+" ORDER BY created_at ASC LIMIT 1", StatusReady)
 	if err := row.Scan(&id); err != nil {
 		return Issue{}, false
 	}
 	// atomic claim: only succeeds if still ready
 	res, err := db.ExecContext(ctx,
-		"UPDATE agentloop_issues SET status="+ph(1)+", claimed_by="+ph(2)+", claimed_at="+ph(3)+", updated_at="+ph(4)+" WHERE id="+ph(5)+" AND status="+ph(6),
+		"UPDATE autopilot_issues SET status="+ph(1)+", claimed_by="+ph(2)+", claimed_at="+ph(3)+", updated_at="+ph(4)+" WHERE id="+ph(5)+" AND status="+ph(6),
 		StatusInProgress, r.agentID, nowStr(), nowStr(), id, StatusReady)
 	if err != nil {
 		return Issue{}, false
@@ -116,7 +116,7 @@ func (r *runner) process(ctx context.Context, issue Issue) {
 		return
 	}
 
-	branch := "agentloop/issue-" + shortID(issue.ID)
+	branch := "autopilot/issue-" + shortID(issue.ID)
 	if err := r.commitBranch(ctx, branch, issue); err != nil {
 		_ = r.s.setIssueStatus(ctx, issue.ID, StatusBlocked, nil)
 		r.comment(ctx, issue.ID, "🚧 **Blocked — git failed:** "+err.Error())
@@ -133,7 +133,7 @@ func (r *runner) process(ctx context.Context, issue Issue) {
 			prMsg = "\n\n_(push/PR failed: " + err.Error() + " — branch is local: " + branch + ")_"
 		}
 	} else {
-		prMsg = "\n\n_(local branch only — set AGENTLOOP_PUSH=1 to open a PR)_"
+		prMsg = "\n\n_(local branch only — set AUTOPILOT_PUSH=1 to open a PR)_"
 	}
 	_ = r.s.setIssueStatus(ctx, issue.ID, StatusInReview, fields)
 	r.comment(ctx, issue.ID, "✅ **Implemented on branch `"+branch+"`.**\n\n"+result.Summary+prMsg+"\n\n_Moved to review._")
@@ -165,7 +165,7 @@ func (r *runner) commitBranch(ctx context.Context, branch string, issue Issue) e
 	if _, err := r.git(ctx, "add", "-A"); err != nil {
 		return err
 	}
-	msg := issue.Title + "\n\nagent-loop issue " + issue.ID
+	msg := issue.Title + "\n\nautopilot issue " + issue.ID
 	_, err := r.git(ctx, "-c", "user.name="+r.gitName, "-c", "user.email="+r.gitEmail, "commit", "-m", msg)
 	return err
 }
@@ -176,7 +176,7 @@ func (r *runner) pushAndPR(ctx context.Context, branch string, issue Issue) (str
 	}
 	// open a PR via gh (hybrid GitHub mirror). Best-effort.
 	cmd := exec.CommandContext(ctx, "gh", "pr", "create", "--head", branch,
-		"--title", issue.Title, "--body", "Implements agent-loop issue `"+issue.ID+"`.\n\n"+issue.Body)
+		"--title", issue.Title, "--body", "Implements autopilot issue `"+issue.ID+"`.\n\n"+issue.Body)
 	cmd.Dir = r.workdir
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb

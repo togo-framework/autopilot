@@ -1,4 +1,4 @@
-module github.com/togo-framework/agent-loop
+module github.com/togo-framework/autopilot
 
 go 1.26.4
 
