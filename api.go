@@ -173,7 +173,7 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "issue not found")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"issue": i, "comments": s.commentsFor(r.Context(), i.ID)})
+	writeJSON(w, 200, map[string]any{"issue": i, "comments": s.commentsFor(r.Context(), i.ID), "attachments": s.attachmentsFor(r.Context(), i.ID)})
 }
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {

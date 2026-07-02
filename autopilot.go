@@ -101,6 +101,10 @@ func (s *server) mount(r chi.Router) {
 		r.Post("/issues/{id}/status", s.setStatus)
 		r.Get("/issues/{id}/comments", s.listComments)
 		r.Post("/issues/{id}/comments", s.addComment)
+		// Media attachments (image/video/file) for an issue.
+		r.Post("/issues/{id}/attachments", s.uploadAttachment)
+		r.Get("/issues/{id}/attachments", s.listAttachments)
+		r.Get("/uploads/{uid}", s.serveUpload)
 		// Real-time event stream (new issue, status move, new comment, …).
 		r.Get("/ws", s.serveWS)
 	})
@@ -150,6 +154,18 @@ func (s *server) migrate(ctx context.Context) error {
 			author TEXT NOT NULL DEFAULT '',
 			author_kind TEXT NOT NULL DEFAULT 'human',
 			body TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		// Attachments (image/video/file). Bytes are base64 in a TEXT column so the
+		// schema is dialect-portable (no BLOB/BYTEA divergence) — fine for an in-app
+		// tool with a sane size cap.
+		`CREATE TABLE IF NOT EXISTS autopilot_uploads (
+			id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL,
+			content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+			size INTEGER NOT NULL DEFAULT 0,
+			data TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		)`,
 	}

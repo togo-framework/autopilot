@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"mime/multipart"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -222,5 +223,47 @@ func TestRunnerSkipsHumanOnly(t *testing.T) {
 	}
 	if claimed.ID != normal.ID {
 		t.Fatalf("runner claimed the wrong issue: got %q, want the non-human-only %q", claimed.ID, normal.ID)
+	}
+}
+
+func TestAttachmentUploadServeRoundTrip(t *testing.T) {
+	s := newTestServer(t)
+	iss := seedReady(t, s, "with media")
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "shot.png")
+	fw.Write([]byte("PNG-BYTES-123"))
+	mw.Close()
+	req := httptest.NewRequest("POST", "/api/autopilot/issues/"+iss.ID+"/attachments", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rc := chi.NewRouteContext()
+	rc.URLParams.Add("id", iss.ID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rc))
+	w := httptest.NewRecorder()
+	s.uploadAttachment(w, req)
+	if w.Code != 201 {
+		t.Fatalf("upload code = %d: %s", w.Code, w.Body.String())
+	}
+	var a Attachment
+	_ = json.Unmarshal(w.Body.Bytes(), &a)
+	if a.ID == "" || a.URL == "" || a.Size != len("PNG-BYTES-123") {
+		t.Fatalf("bad attachment meta: %+v", a)
+	}
+
+	// serve it back
+	sreq := httptest.NewRequest("GET", a.URL, nil)
+	src := chi.NewRouteContext()
+	src.URLParams.Add("uid", a.ID)
+	sreq = sreq.WithContext(context.WithValue(sreq.Context(), chi.RouteCtxKey, src))
+	sw := httptest.NewRecorder()
+	s.serveUpload(sw, sreq)
+	if sw.Code != 200 || sw.Body.String() != "PNG-BYTES-123" {
+		t.Fatalf("serve code=%d body=%q", sw.Code, sw.Body.String())
+	}
+
+	// listed on the issue
+	if got := s.attachmentsFor(context.Background(), iss.ID); len(got) != 1 {
+		t.Fatalf("attachmentsFor = %d, want 1", len(got))
 	}
 }
