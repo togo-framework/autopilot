@@ -111,6 +111,7 @@ func (s *server) mount(r chi.Router) {
 	// session; their data calls remain auth-guarded above.
 	r.Get("/autopilot", s.serveBoard)
 	r.Get("/autopilot/feedback.js", s.serveFeedbackJS)
+	r.Get("/autopilot/sdk.js", s.serveSDK)
 }
 
 // ---- schema (idempotent; dialect-portable TEXT/INTEGER) ----
