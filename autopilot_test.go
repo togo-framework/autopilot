@@ -14,6 +14,9 @@ import (
 	"time"
 	"testing"
 
+	"github.com/togo-framework/togo"
+	"github.com/togo-framework/providers"
+
 	"github.com/go-chi/chi/v5"
 	_ "modernc.org/sqlite"
 )
@@ -69,7 +72,7 @@ func (f fakeImpl) Implement(ctx context.Context, workdir string, issue Issue) Im
 }
 
 func testRunner(s *server, workdir string, impl Implementer) *runner {
-	return &runner{s: s, workdir: workdir, agentID: "test-agent", gitName: "a", gitEmail: "a@a.io", impl: impl, push: false}
+	return &runner{s: s, workdir: workdir, agentID: "test-agent", gitName: "a", gitEmail: "a@a.io", impl: impl, exec: &localExecutor{workdir: workdir}, push: false}
 }
 
 func seedReady(t *testing.T, s *server, title string) Issue {
@@ -265,5 +268,22 @@ func TestAttachmentUploadServeRoundTrip(t *testing.T) {
 	// listed on the issue
 	if got := s.attachmentsFor(context.Background(), iss.ID); len(got) != 1 {
 		t.Fatalf("attachmentsFor = %d, want 1", len(got))
+	}
+}
+
+func TestResolveProvidersFromContainer(t *testing.T) {
+	s := newTestServer(t)
+	s.k = togo.New()
+	// empty container → built-in defaults
+	if _, ok := resolveImpl(s).(*ClaudeExecutor); !ok {
+		t.Fatal("default impl should be ClaudeExecutor")
+	}
+	if _, ok := resolveExec(s).(*localExecutor); !ok {
+		t.Fatal("default exec should be localExecutor")
+	}
+	// a registered provider wins over the default
+	s.k.Set(providers.CapImplement, Implementer(fakeImpl{}))
+	if _, ok := resolveImpl(s).(fakeImpl); !ok {
+		t.Fatal("registered impl should win over the default")
 	}
 }

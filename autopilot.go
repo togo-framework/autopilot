@@ -24,6 +24,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/togo-framework/togo"
 	auth "github.com/togo-framework/auth"
+	"github.com/togo-framework/providers"
 )
 
 // Status workflow. Transitions are enforced in api.go / runner.go.
@@ -64,6 +65,12 @@ func init() {
 				k.Log.Info("autopilot: self-healing enabled (panics/5xx -> bug issues)")
 			}
 		}
+
+		// Register the built-in defaults into the impl/exec capability slots. Other
+		// plugins (togo-framework/omnigent → impl, togo-framework/coder → exec) also
+		// register and win when selected over CLI/.env/settings; these stay default.
+		providers.Use(k, providers.CapImplement, "claude", &ClaudeExecutor{bin: env("AUTOPILOT_CLAUDE_BIN", "claude")}, true)
+		providers.Use(k, providers.CapExecute, "local", &localExecutor{workdir: env("AUTOPILOT_WORKDIR", ".")}, true)
 
 		// The runner is opt-in (it shells out to Claude Code + git). Off by default.
 		if os.Getenv("AUTOPILOT_RUNNER") == "1" {

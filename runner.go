@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/togo-framework/providers"
 )
 
 // ImplementResult is what an Implementer reports back to the runner.
@@ -19,10 +21,53 @@ type ImplementResult struct {
 	Changed    bool   // did it leave file changes in the working tree
 }
 
-// Implementer turns an issue into working-tree changes. ClaudeExecutor is the
-// real one (invokes Claude Code headless); tests inject a fake.
+// Implementer turns an issue into working-tree changes — the `impl` capability.
+// ClaudeExecutor is the default (invokes Claude Code headless); togo-framework/
+// omnigent registers an alternative; tests inject a fake.
 type Implementer interface {
 	Implement(ctx context.Context, workdir string, issue Issue) ImplementResult
+}
+
+// Executor provisions the environment an issue is implemented in — the `exec`
+// capability. localExecutor (default) uses the configured working directory in
+// place; togo-framework/coder provisions an isolated workspace instead.
+type Executor interface {
+	// Acquire returns a working directory to implement in and a release func to
+	// tear it down afterwards (a no-op for local).
+	Acquire(ctx context.Context, issue Issue) (workdir string, release func(), err error)
+}
+
+// localExecutor runs in the configured working directory in place (today's
+// behavior). It is registered as the default `exec` backend.
+type localExecutor struct{ workdir string }
+
+func (l *localExecutor) Acquire(context.Context, Issue) (string, func(), error) {
+	return l.workdir, func() {}, nil
+}
+
+// resolveImpl / resolveExec read the active backend from the kernel container
+// (populated by providers.Use), falling back to the built-in defaults so
+// autopilot works even if no provider was explicitly selected.
+func resolveImpl(s *server) Implementer {
+	if s.k != nil {
+		if v, ok := s.k.Get(providers.CapImplement); ok {
+			if im, ok := v.(Implementer); ok {
+				return im
+			}
+		}
+	}
+	return &ClaudeExecutor{bin: env("AUTOPILOT_CLAUDE_BIN", "claude")}
+}
+
+func resolveExec(s *server) Executor {
+	if s.k != nil {
+		if v, ok := s.k.Get(providers.CapExecute); ok {
+			if ex, ok := v.(Executor); ok {
+				return ex
+			}
+		}
+	}
+	return &localExecutor{workdir: env("AUTOPILOT_WORKDIR", ".")}
 }
 
 type runner struct {
@@ -34,6 +79,7 @@ type runner struct {
 	gitName   string
 	gitEmail  string
 	impl      Implementer
+	exec      Executor
 }
 
 func newRunner(s *server) *runner {
@@ -49,7 +95,10 @@ func newRunner(s *server) *runner {
 		agentID:  env("AUTOPILOT_AGENT_ID", "togo-agent"),
 		gitName:  env("AUTOPILOT_COMMIT_NAME", "togo agent"),
 		gitEmail: env("AUTOPILOT_COMMIT_EMAIL", "agent@togo.dev"),
-		impl:     &ClaudeExecutor{bin: env("AUTOPILOT_CLAUDE_BIN", "claude")},
+		// impl + exec resolve the active provider (claude/local by default), so
+		// installing togo-framework/omnigent or /coder swaps them via config.
+		impl: resolveImpl(s),
+		exec: resolveExec(s),
 	}
 }
 
@@ -105,7 +154,17 @@ func (r *runner) claimNextReady(ctx context.Context) (Issue, bool) {
 func (r *runner) process(ctx context.Context, issue Issue) {
 	r.comment(ctx, issue.ID, fmt.Sprintf("Claimed by **%s** — implementing…", r.agentID))
 
-	result := r.impl.Implement(ctx, r.workdir, issue)
+	// Acquire an environment from the exec provider (local dir by default; an
+	// isolated Coder workspace when togo-framework/coder is selected).
+	wd, release, err := r.exec.Acquire(ctx, issue)
+	if err != nil {
+		r.setStatus(ctx, issue.ID, StatusBlocked, issue.Title, nil)
+		r.comment(ctx, issue.ID, "🚧 **Blocked — could not acquire an environment:** "+err.Error())
+		return
+	}
+	defer release()
+
+	result := r.impl.Implement(ctx, wd, issue)
 
 	if result.NeedsInput {
 		r.setStatus(ctx, issue.ID, StatusBlocked, issue.Title, nil)
