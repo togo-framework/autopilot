@@ -59,15 +59,15 @@ type fakeImpl struct {
 	reason     string
 }
 
-func (f fakeImpl) Implement(ctx context.Context, workdir string, issue Issue) ImplementResult {
+func (f fakeImpl) Implement(ctx context.Context, env Env, issue Issue) ImplementResult {
 	if f.writeFile {
-		_ = os.WriteFile(filepath.Join(workdir, "AGENT_OUT.txt"), []byte(issue.Title), 0644)
+		_ = os.WriteFile(filepath.Join(env.Dir(), "AGENT_OUT.txt"), []byte(issue.Title), 0644)
 	}
 	return ImplementResult{
 		Summary:    "fake did the work",
 		NeedsInput: f.needsInput,
 		Reason:     f.reason,
-		Changed:    workdirDirty(ctx, workdir),
+		Changed:    envDirty(ctx, env),
 	}
 }
 

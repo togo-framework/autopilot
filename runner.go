@@ -21,28 +21,55 @@ type ImplementResult struct {
 	Changed    bool   // did it leave file changes in the working tree
 }
 
-// Implementer turns an issue into working-tree changes — the `impl` capability.
-// ClaudeExecutor is the default (invokes Claude Code headless); togo-framework/
-// omnigent registers an alternative; tests inject a fake.
-type Implementer interface {
-	Implement(ctx context.Context, workdir string, issue Issue) ImplementResult
+// Env is an execution environment — a working directory plus a way to run
+// commands in it. localEnv runs locally; togo-framework/coder returns an Env that
+// runs commands inside an isolated Coder workspace. This is what lets the impl +
+// git operations happen either locally or remotely without the runner caring.
+type Env interface {
+	// Dir is the repo working directory inside the environment.
+	Dir() string
+	// Run executes a command in the environment, returning combined stdout.
+	Run(ctx context.Context, name string, args ...string) (string, error)
 }
 
-// Executor provisions the environment an issue is implemented in — the `exec`
-// capability. localExecutor (default) uses the configured working directory in
-// place; togo-framework/coder provisions an isolated workspace instead.
+// localEnv runs commands on the local machine in a fixed directory.
+type localEnv struct{ dir string }
+
+func (l localEnv) Dir() string { return l.dir }
+
+func (l localEnv) Run(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = l.dir
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return out.String(), fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
+	}
+	return out.String(), nil
+}
+
+// Implementer turns an issue into working-tree changes inside an Env — the `impl`
+// capability. ClaudeExecutor is the default (invokes Claude Code headless);
+// togo-framework/omnigent registers an alternative; tests inject a fake.
+type Implementer interface {
+	Implement(ctx context.Context, env Env, issue Issue) ImplementResult
+}
+
+// Executor provisions the Env an issue is implemented in — the `exec` capability.
+// localExecutor (default) uses the configured working directory in place;
+// togo-framework/coder provisions an isolated workspace instead.
 type Executor interface {
-	// Acquire returns a working directory to implement in and a release func to
-	// tear it down afterwards (a no-op for local).
-	Acquire(ctx context.Context, issue Issue) (workdir string, release func(), err error)
+	// Acquire returns an Env to implement in and a release func to tear it down
+	// afterwards (a no-op for local).
+	Acquire(ctx context.Context, issue Issue) (Env, func(), error)
 }
 
 // localExecutor runs in the configured working directory in place (today's
 // behavior). It is registered as the default `exec` backend.
 type localExecutor struct{ workdir string }
 
-func (l *localExecutor) Acquire(context.Context, Issue) (string, func(), error) {
-	return l.workdir, func() {}, nil
+func (l *localExecutor) Acquire(context.Context, Issue) (Env, func(), error) {
+	return localEnv{dir: l.workdir}, func() {}, nil
 }
 
 // resolveImpl / resolveExec read the active backend from the kernel container
@@ -156,7 +183,7 @@ func (r *runner) process(ctx context.Context, issue Issue) {
 
 	// Acquire an environment from the exec provider (local dir by default; an
 	// isolated Coder workspace when togo-framework/coder is selected).
-	wd, release, err := r.exec.Acquire(ctx, issue)
+	env, release, err := r.exec.Acquire(ctx, issue)
 	if err != nil {
 		r.setStatus(ctx, issue.ID, StatusBlocked, issue.Title, nil)
 		r.comment(ctx, issue.ID, "🚧 **Blocked — could not acquire an environment:** "+err.Error())
@@ -164,7 +191,7 @@ func (r *runner) process(ctx context.Context, issue Issue) {
 	}
 	defer release()
 
-	result := r.impl.Implement(ctx, wd, issue)
+	result := r.impl.Implement(ctx, env, issue)
 
 	if result.NeedsInput {
 		r.setStatus(ctx, issue.ID, StatusBlocked, issue.Title, nil)
@@ -178,7 +205,7 @@ func (r *runner) process(ctx context.Context, issue Issue) {
 	}
 
 	branch := "autopilot/issue-" + shortID(issue.ID)
-	if err := r.commitBranch(ctx, branch, issue); err != nil {
+	if err := r.commitBranch(ctx, env, branch, issue); err != nil {
 		r.setStatus(ctx, issue.ID, StatusBlocked, issue.Title, nil)
 		r.comment(ctx, issue.ID, "🚧 **Blocked — git failed:** "+err.Error())
 		return
@@ -187,7 +214,7 @@ func (r *runner) process(ctx context.Context, issue Issue) {
 	fields := map[string]string{"branch": branch, "result": trim(result.Summary, 2000)}
 	prMsg := ""
 	if r.push {
-		if url, err := r.pushAndPR(ctx, branch, issue); err == nil {
+		if url, err := r.pushAndPR(ctx, env, branch, issue); err == nil {
 			fields["pr_url"] = url
 			prMsg = "\n\nPR: " + url
 		} else {
@@ -214,45 +241,37 @@ func (r *runner) setStatus(ctx context.Context, id, status, title string, fields
 
 // ---- git ----
 
-func (r *runner) git(ctx context.Context, args ...string) (string, error) {
-	full := append([]string{"-C", r.workdir}, args...)
-	cmd := exec.CommandContext(ctx, "git", full...)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return out.String(), fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
-	}
-	return out.String(), nil
+// git runs a git command inside the Env (locally or in a remote workspace); the
+// Env supplies the working directory, so no -C is needed.
+func (r *runner) git(ctx context.Context, env Env, args ...string) (string, error) {
+	return env.Run(ctx, "git", args...)
 }
 
-func (r *runner) commitBranch(ctx context.Context, branch string, issue Issue) error {
+func (r *runner) commitBranch(ctx context.Context, env Env, branch string, issue Issue) error {
 	// fresh branch off current HEAD (delete a stale one of the same name first)
-	_, _ = r.git(ctx, "branch", "-D", branch)
-	if _, err := r.git(ctx, "checkout", "-b", branch); err != nil {
+	_, _ = r.git(ctx, env, "branch", "-D", branch)
+	if _, err := r.git(ctx, env, "checkout", "-b", branch); err != nil {
 		return err
 	}
-	if _, err := r.git(ctx, "add", "-A"); err != nil {
+	if _, err := r.git(ctx, env, "add", "-A"); err != nil {
 		return err
 	}
 	msg := issue.Title + "\n\nautopilot issue " + issue.ID
-	_, err := r.git(ctx, "-c", "user.name="+r.gitName, "-c", "user.email="+r.gitEmail, "commit", "-m", msg)
+	_, err := r.git(ctx, env, "-c", "user.name="+r.gitName, "-c", "user.email="+r.gitEmail, "commit", "-m", msg)
 	return err
 }
 
-func (r *runner) pushAndPR(ctx context.Context, branch string, issue Issue) (string, error) {
-	if _, err := r.git(ctx, "push", "-u", "origin", branch); err != nil {
+func (r *runner) pushAndPR(ctx context.Context, env Env, branch string, issue Issue) (string, error) {
+	if _, err := r.git(ctx, env, "push", "-u", "origin", branch); err != nil {
 		return "", err
 	}
-	// open a PR via gh (hybrid GitHub mirror). Best-effort.
-	cmd := exec.CommandContext(ctx, "gh", "pr", "create", "--head", branch,
+	// open a PR via gh (hybrid GitHub mirror), inside the Env. Best-effort.
+	out, err := env.Run(ctx, "gh", "pr", "create", "--head", branch,
 		"--title", issue.Title, "--body", "Implements autopilot issue `"+issue.ID+"`.\n\n"+issue.Body)
-	cmd.Dir = r.workdir
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(errb.String()))
+	if err != nil {
+		return "", err
 	}
-	return strings.TrimSpace(out.String()), nil
+	return strings.TrimSpace(out), nil
 }
 
 // ---- Claude Code executor ----
@@ -262,19 +281,15 @@ func (r *runner) pushAndPR(ctx context.Context, branch string, issue Issue) (str
 // needed, make no changes and reply with a line starting "BLOCKED:".
 type ClaudeExecutor struct{ bin string }
 
-func (c *ClaudeExecutor) Implement(ctx context.Context, workdir string, issue Issue) ImplementResult {
+func (c *ClaudeExecutor) Implement(ctx context.Context, env Env, issue Issue) ImplementResult {
 	prompt := buildPrompt(issue)
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, c.bin, "-p", prompt, "--permission-mode", "acceptEdits")
-	cmd.Dir = workdir
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	runErr := cmd.Run()
-	stdout := out.String()
+	// Run Claude Code inside the Env (local dir or a remote Coder workspace).
+	stdout, runErr := env.Run(cctx, c.bin, "-p", prompt, "--permission-mode", "acceptEdits")
 
 	// Did it change anything?
-	changed := workdirDirty(cctx, workdir)
+	changed := envDirty(cctx, env)
 
 	// Explicit block signal from the agent.
 	if strings.Contains(stdout, "BLOCKED:") {
@@ -282,7 +297,7 @@ func (c *ClaudeExecutor) Implement(ctx context.Context, workdir string, issue Is
 		return ImplementResult{NeedsInput: true, Reason: trim(strings.TrimSpace(reason), 1500), Changed: changed}
 	}
 	if runErr != nil && !changed {
-		return ImplementResult{Reason: "claude: " + runErr.Error() + " " + trim(strings.TrimSpace(errb.String()), 500), Changed: false}
+		return ImplementResult{Reason: "claude: " + trim(runErr.Error(), 600), Changed: false}
 	}
 	return ImplementResult{Summary: trim(strings.TrimSpace(stdout), 2000), Changed: changed}
 }
@@ -297,10 +312,10 @@ func buildPrompt(issue Issue) string {
 		"- When done, briefly summarize what you changed."
 }
 
-func workdirDirty(ctx context.Context, workdir string) bool {
-	cmd := exec.CommandContext(ctx, "git", "-C", workdir, "status", "--porcelain")
-	out, err := cmd.Output()
-	return err == nil && strings.TrimSpace(string(out)) != ""
+// envDirty reports whether the working tree in the Env has uncommitted changes.
+func envDirty(ctx context.Context, env Env) bool {
+	out, err := env.Run(ctx, "git", "status", "--porcelain")
+	return err == nil && strings.TrimSpace(out) != ""
 }
 
 func shortID(id string) string {
