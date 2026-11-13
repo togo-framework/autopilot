@@ -144,9 +144,16 @@ Things to know:
 - Roles are baked into the session token when it is issued, so a revoked role
   stays valid until that token expires (`AUTH_TTL_HOURS`, 24 h by default).
   Shorten the TTL if you need faster revocation.
-- An already-open live-stream (WebSocket) connection keeps streaming after a
-  role is revoked, until it closes. The role and the `Origin` are checked when
-  the connection opens.
+- An open live-stream (WebSocket) connection re-checks its account every 30
+  seconds against the auth plugin's `UserByID` (current roles) and re-validates
+  the session. If the role was revoked, the account deleted or the session
+  expired, the stream is closed (policy violation) and a reconnect is refused.
+  The `Origin` is checked when the connection opens. HTTP calls still use the
+  roles in the session token until it expires (see above).
+- Attachment uploads are `multipart/form-data`, so they are not covered by the
+  JSON-only rule; instead a browser request whose `Origin` is not this host
+  (including a sibling subdomain or `null`) is refused with `403`. Requests with
+  no `Origin` (curl, server-side clients) are not affected.
 - Personal access tokens carry abilities, not roles, so a PAT is refused (`403`).
 - The mutating routes accept `application/json` bodies only (`415` otherwise).
 - Self-healing (`AUTOPILOT_SELF_HEAL=1`) files bugs as `backlog` only; an

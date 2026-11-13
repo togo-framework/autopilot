@@ -174,7 +174,7 @@ func (s *server) mount(r chi.Router) {
 		r.With(viewer).Get("/issues/{id}/comments", s.listComments)
 		r.With(reporter, jsonOnly).Post("/issues/{id}/comments", s.addComment)
 		// Media attachments (image/video/file) for an issue.
-		r.With(operator).Post("/issues/{id}/attachments", s.uploadAttachment)
+		r.With(operator, sameOriginOnly).Post("/issues/{id}/attachments", s.uploadAttachment)
 		r.With(viewer).Get("/issues/{id}/attachments", s.listAttachments)
 		r.With(viewer).Get("/uploads/{uid}", s.serveUpload)
 		// Real-time event stream (new issue, status move, new comment, …).

@@ -1,8 +1,10 @@
 package autopilot
 
 import (
+	"context"
 	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/togo-framework/auth"
@@ -126,6 +128,49 @@ func jsonOnly(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sameOriginOnly refuses a browser request that comes from another origin. The
+// upload is multipart/form-data, which a page can send cross-site as a plain form
+// post, so jsonOnly cannot cover it, and SameSite=Lax does not stop a sibling
+// subdomain. Browsers always send Origin on a POST, so a present Origin whose
+// host differs from ours (or is "null") is refused. A request without Origin
+// (curl, a server-side client) is not a browser with ambient cookies and passes.
+func sameOriginOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" {
+			u, err := url.Parse(o)
+			if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) {
+				writeErr(w, http.StatusForbidden, "cross-origin request refused")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// stillAllowed re-reads the caller's access for a connection that is already
+// open. The role in a session token is a snapshot from sign-in, so it asks the
+// auth plugin for the account's CURRENT roles (UserByID) and also re-validates
+// the token itself (expiry). It reports false when the account is gone, has no
+// Autopilot role any more, or the token has expired.
+func (s *server) stillAllowed(ctx context.Context, r *http.Request) bool {
+	if s.identity != nil {
+		id, ok := s.identity(r)
+		return ok && id != nil && levelOf(id) >= levelViewer
+	}
+	if s.auth == nil {
+		return true // development opt-out: no accounts to revoke
+	}
+	id, err := s.auth.Authenticate(r)
+	if err != nil || id == nil {
+		return false
+	}
+	cur, err := s.auth.UserByID(ctx, id.ID)
+	if err != nil || cur == nil {
+		return false
+	}
+	return levelOf(cur) >= levelViewer
 }
 
 // deny answers 403 for a rule that depends on the data (for example "own

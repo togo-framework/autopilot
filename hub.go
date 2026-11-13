@@ -78,6 +78,10 @@ func wsOriginPatterns() []string {
 	return out
 }
 
+// wsRecheckEvery is how often an open stream re-checks that its account still
+// has an Autopilot role. A variable so tests can shorten it.
+var wsRecheckEvery = 30 * time.Second
+
 // serveWS upgrades to a WebSocket and streams events until the client leaves.
 func (s *server) serveWS(w http.ResponseWriter, r *http.Request) {
 	if s.hub == nil {
@@ -110,10 +114,19 @@ func (s *server) serveWS(w http.ResponseWriter, r *http.Request) {
 	_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"hello"}`))
 	ping := time.NewTicker(30 * time.Second)
 	defer ping.Stop()
+	recheck := time.NewTicker(wsRecheckEvery)
+	defer recheck.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-recheck.C:
+			// A revoked role (or an expired session) ends the stream; the client
+			// reconnects and the handshake is refused.
+			if !s.stillAllowed(ctx, r) {
+				_ = c.Close(websocket.StatusPolicyViolation, "access revoked")
+				return
+			}
 		case msg, ok := <-client.send:
 			if !ok {
 				return
