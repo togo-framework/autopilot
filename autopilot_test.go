@@ -287,3 +287,43 @@ func TestResolveProvidersFromContainer(t *testing.T) {
 		t.Fatal("registered impl should win over the default")
 	}
 }
+
+// Bypass test: with no auth plugin the API must not be reachable.
+func TestMountFailsClosedWithoutAuth(t *testing.T) {
+	t.Setenv("AUTOPILOT_ALLOW_UNAUTHENTICATED", "")
+	s := &server{hub: newHub()} // s.auth == nil: no auth plugin installed
+	r := chi.NewRouter()
+	if err := s.mountIfSafe(r); err == nil {
+		t.Fatal("mountIfSafe must refuse to mount without the auth plugin")
+	}
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/autopilot/issues"},
+		{"POST", "/api/autopilot/issues"},
+		{"POST", "/api/autopilot/issues/x/status"},
+		{"GET", "/api/autopilot/ws"},
+		{"GET", "/api/autopilot/uploads/x"},
+		{"POST", "/api/autopilot/feedback"},
+		{"GET", "/autopilot"},
+		{"GET", "/autopilot/sdk.js"},
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(c.method, c.path, strings.NewReader("{}")))
+		if w.Code != 404 {
+			t.Errorf("%s %s = %d, want 404 (not mounted)", c.method, c.path, w.Code)
+		}
+	}
+}
+
+func TestMountAllowedWithExplicitDevOptOut(t *testing.T) {
+	t.Setenv("AUTOPILOT_ALLOW_UNAUTHENTICATED", "1")
+	s := &server{hub: newHub()}
+	r := chi.NewRouter()
+	if err := s.mountIfSafe(r); err != nil {
+		t.Fatalf("explicit opt-out should mount: %v", err)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/autopilot", nil))
+	if w.Code == 404 {
+		t.Fatal("board route should be mounted with the opt-out")
+	}
+}

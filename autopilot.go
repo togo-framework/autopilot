@@ -17,23 +17,24 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/togo-framework/togo"
 	auth "github.com/togo-framework/auth"
 	"github.com/togo-framework/providers"
+	"github.com/togo-framework/togo"
 )
 
 // Status workflow. Transitions are enforced in api.go / runner.go.
 const (
 	StatusBacklog    = "backlog"
-	StatusReady      = "ready"        // handed to the agents
-	StatusInProgress = "in_progress"  // an agent has claimed it
-	StatusBlocked    = "blocked"      // agent needs a human decision (see comments)
-	StatusInReview   = "in_review"    // branch/PR ready for human review
+	StatusReady      = "ready"       // handed to the agents
+	StatusInProgress = "in_progress" // an agent has claimed it
+	StatusBlocked    = "blocked"     // agent needs a human decision (see comments)
+	StatusInReview   = "in_review"   // branch/PR ready for human review
 	StatusDone       = "done"
 )
 
@@ -54,7 +55,12 @@ func init() {
 			}
 			return nil // don't take the app down; the board just won't work
 		}
-		s.mount(k.Router)
+		if err := s.mountIfSafe(k.Router); err != nil {
+			if k.Log != nil {
+				k.Log.Error("autopilot: not mounted", "err", err)
+			}
+			return nil // fail closed: no routes, no board, no runner
+		}
 
 		// Self-healing (opt-in): an outer middleware that auto-files a bug issue on
 		// panic/5xx. Uses UseMiddleware (togo >= v0.21.0), applied at serve time so
@@ -92,6 +98,28 @@ type server struct {
 	testDB *sql.DB
 	// hub fans real-time events (issue/comment changes) to WebSocket clients.
 	hub *hub
+	// allowUnauthenticated mounts the API without the auth plugin. Development
+	// only; set from AUTOPILOT_ALLOW_UNAUTHENTICATED=1.
+	allowUnauthenticated bool
+}
+
+// errAuthRequired is returned when Autopilot would be mounted with no auth plugin.
+var errAuthRequired = errors.New("the auth plugin is required (install togo-framework/auth); " +
+	"for local development only, set AUTOPILOT_ALLOW_UNAUTHENTICATED=1")
+
+// mountIfSafe fails closed: without the auth plugin nothing is mounted unless
+// the development-only opt-out is set, which logs a warning.
+func (s *server) mountIfSafe(r chi.Router) error {
+	if s.auth == nil {
+		if !s.allowUnauthenticated && os.Getenv("AUTOPILOT_ALLOW_UNAUTHENTICATED") != "1" {
+			return errAuthRequired
+		}
+		if s.k != nil && s.k.Log != nil {
+			s.k.Log.Warn("autopilot: running WITHOUT authentication (AUTOPILOT_ALLOW_UNAUTHENTICATED=1); development only")
+		}
+	}
+	s.mount(r)
+	return nil
 }
 
 func (s *server) mount(r chi.Router) {
