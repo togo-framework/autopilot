@@ -47,7 +47,9 @@
     + ".toast.blocked{border-left-color:#e5484d}.toast.review{border-left-color:#f5a623}.toast.done{border-left-color:#22C55E}.toast.comment{border-left-color:#8B5CF6}\n.toast .x{opacity:.5}\n";
 
   function h(tag, attrs, html) { var e = document.createElement(tag); for (var k in (attrs || {})) e.setAttribute(k, attrs[k]); if (html != null) e.innerHTML = html; return e; }
-  function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; }); }
+  function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function safeUrl(u) { return /^https?:\/\//i.test(u || "") ? u : "#"; }
+  function cls(s) { return String(s || "").replace(/[^a-z0-9_-]/gi, ""); }
   function j(method, path, body) {
     return fetch(api + path, { method: method, credentials: "include", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined })
       .then(function (r) { if (!r.ok) throw new Error(r.status); return r.status === 204 ? {} : r.json(); });
@@ -119,7 +121,7 @@
         if (!items.length) return;
         html += '<div class="grp">' + s[1] + ' · ' + items.length + '</div>';
         items.forEach(function (i) {
-          html += '<div class="card" data-id="' + i.id + '"><div class="t">' + esc(i.title) + '</div><div style="margin-top:5px">'
+          html += '<div class="card" data-id="' + esc(i.id) + '"><div class="t">' + esc(i.title) + '</div><div style="margin-top:5px">'
             + '<span class="pill" style="background:' + (KINDS[i.kind] || "#334") + '22;color:' + (KINDS[i.kind] || "#8aa") + '">' + esc(i.kind) + '</span>'
             + (i.branch ? '<span class="pill" style="background:#1d2530;color:#8aa">⎇ ' + esc(i.branch.split("/").pop()) + '</span>' : '') + '</div></div>';
         });
@@ -154,12 +156,12 @@
         if (i.status === "in_review") { acts.push('<button class="btn p" data-s="done">Accept ✓</button>'); acts.push('<button class="btn" data-s="ready">Re-run</button>'); }
         if (i.status === "blocked") acts.push('<span class="muted">Reply below to unblock ↓</span>');
         bodyEl.innerHTML = '<button class="back">← issues</button>'
-          + '<div><span class="sb" style="color:' + STONE[i.status] + ';border-color:' + STONE[i.status] + '">' + i.status + '</span>' + (i.pr_url ? ' <a class="back" href="' + esc(i.pr_url) + '" target="_blank">PR ↗</a>' : '') + '</div>'
+          + '<div><span class="sb" style="color:' + STONE[i.status] + ';border-color:' + STONE[i.status] + '">' + esc(i.status) + '</span>' + (i.pr_url ? ' <a class="back" href="' + esc(safeUrl(i.pr_url)) + '" target="_blank">PR ↗</a>' : '') + '</div>'
           + '<h3 style="margin:8px 0 2px">' + esc(i.title) + '</h3>'
           + (i.body ? '<pre>' + esc(i.body) + '</pre>' : '')
           + '<div class="row">' + acts.join(" ") + '</div>'
           + (i.result ? '<div class="grp">last agent result</div><pre>' + esc(i.result) + '</pre>' : '')
-          + '<div class="grp">thread</div><div id="th">' + (cs.map(function (c) { return '<div class="cmt ' + c.author_kind + '"><div class="w"><b>' + esc(c.author) + '</b> · ' + c.author_kind + '</div>' + esc(c.body).replace(/\n/g, "<br>") + '</div>'; }).join("") || '<span class="muted">No comments.</span>') + '</div>'
+          + '<div class="grp">thread</div><div id="th">' + (cs.map(function (c) { return '<div class="cmt ' + cls(c.author_kind) + '"><div class="w"><b>' + esc(c.author) + '</b> · ' + esc(c.author_kind) + '</div>' + esc(c.body).replace(/\n/g, "<br>") + '</div>'; }).join("") || '<span class="muted">No comments.</span>') + '</div>'
           + '<textarea id="cb" rows="2" placeholder="' + (i.status === "blocked" ? "Answer to unblock…" : "Comment…") + '"></textarea><div class="row"><button class="btn p" id="send">Comment' + (i.status === "blocked" ? " & unblock" : "") + '</button></div>';
         bodyEl.querySelector(".back").onclick = function () { state.openId = null; render(); };
         bodyEl.querySelectorAll("[data-s]").forEach(function (b) { b.onclick = function () { j("POST", "/issues/" + id + "/status", { status: b.getAttribute("data-s") }).then(function () { refresh().then(render); }); }; });

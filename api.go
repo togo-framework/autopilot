@@ -206,6 +206,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid status")
 		return
 	}
+	if !validKind(i.Kind) {
+		writeErr(w, 400, "invalid kind")
+		return
+	}
 	if err := s.insertIssue(r.Context(), i); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -241,6 +245,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		fields["body"] = *body.Body
 	}
 	if body.Kind != nil {
+		if !validKind(*body.Kind) {
+			writeErr(w, 400, "invalid kind")
+			return
+		}
 		fields["kind"] = *body.Kind
 	}
 	if body.Assignee != nil {
@@ -321,6 +329,10 @@ func (s *server) addComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := firstNonEmpty(body.AuthorKind, "human")
+	if !validAuthorKind(kind) {
+		writeErr(w, 400, "invalid author_kind")
+		return
+	}
 	c := Comment{ID: genID(), IssueID: id, Author: firstNonEmpty(body.Author, "human"),
 		AuthorKind: kind, Body: body.Body, CreatedAt: nowStr()}
 	if err := s.insertComment(r.Context(), c); err != nil {
@@ -377,6 +389,24 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// validKind and validAuthorKind are fixed allow-lists: these values are rendered
+// by the board, so they must never be free text.
+func validKind(k string) bool {
+	switch k {
+	case "feature", "bug", "chore", "question", "discussion", "feedback":
+		return true
+	}
+	return false
+}
+
+func validAuthorKind(k string) bool {
+	switch k {
+	case "human", "agent", "system":
+		return true
+	}
+	return false
 }
 
 func validStatus(s string) bool {
