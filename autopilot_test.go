@@ -287,3 +287,90 @@ func TestResolveProvidersFromContainer(t *testing.T) {
 		t.Fatal("registered impl should win over the default")
 	}
 }
+
+// Bypass test: with no auth plugin the API must not be reachable.
+func TestMountFailsClosedWithoutAuth(t *testing.T) {
+	t.Setenv("AUTOPILOT_ALLOW_UNAUTHENTICATED", "")
+	s := &server{hub: newHub()} // s.auth == nil: no auth plugin installed
+	r := chi.NewRouter()
+	if err := s.mountIfSafe(r); err == nil {
+		t.Fatal("mountIfSafe must refuse to mount without the auth plugin")
+	}
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/autopilot/issues"},
+		{"POST", "/api/autopilot/issues"},
+		{"POST", "/api/autopilot/issues/x/status"},
+		{"GET", "/api/autopilot/ws"},
+		{"GET", "/api/autopilot/uploads/x"},
+		{"POST", "/api/autopilot/feedback"},
+		{"GET", "/autopilot"},
+		{"GET", "/autopilot/sdk.js"},
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(c.method, c.path, strings.NewReader("{}")))
+		if w.Code != 404 {
+			t.Errorf("%s %s = %d, want 404 (not mounted)", c.method, c.path, w.Code)
+		}
+	}
+}
+
+func TestMountAllowedWithExplicitDevOptOut(t *testing.T) {
+	t.Setenv("AUTOPILOT_ALLOW_UNAUTHENTICATED", "1")
+	for _, n := range []string{"AUTOPILOT_RUNNER", "APP_ENV", "TOGO_ENV", "GO_ENV", "ENV"} {
+		t.Setenv(n, "")
+	}
+	s := &server{hub: newHub()}
+	r := chi.NewRouter()
+	if err := s.mountIfSafe(r); err != nil {
+		t.Fatalf("explicit opt-out should mount: %v", err)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/autopilot", nil))
+	if w.Code == 404 {
+		t.Fatal("board route should be mounted with the opt-out")
+	}
+}
+
+// Bypass test: the development opt-out must not combine with the runner or a
+// production environment. Nothing may be mounted in those combinations.
+func TestDevOptOutRefusedInDangerousCombinations(t *testing.T) {
+	cases := []struct{ name, env, val string }{
+		{"runner", "AUTOPILOT_RUNNER", "1"},
+		{"APP_ENV production", "APP_ENV", "production"},
+		{"APP_ENV prod mixed case", "APP_ENV", " Prod "},
+		{"TOGO_ENV production", "TOGO_ENV", "production"},
+		{"GO_ENV production", "GO_ENV", "production"},
+		{"ENV production", "ENV", "production"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, n := range []string{"AUTOPILOT_RUNNER", "APP_ENV", "TOGO_ENV", "GO_ENV", "ENV"} {
+				t.Setenv(n, "")
+			}
+			t.Setenv("AUTOPILOT_ALLOW_UNAUTHENTICATED", "1")
+			t.Setenv(c.env, c.val)
+			s := &server{hub: newHub()}
+			r := chi.NewRouter()
+			if err := s.mountIfSafe(r); err == nil {
+				t.Fatalf("opt-out with %s=%q must be refused", c.env, c.val)
+			}
+			for _, p := range []string{"/api/autopilot/issues", "/autopilot"} {
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, httptest.NewRequest("GET", p, nil))
+				if w.Code != 404 {
+					t.Errorf("GET %s = %d, want 404 (not mounted)", p, w.Code)
+				}
+			}
+		})
+	}
+	// Harmless values still work.
+	for _, n := range []string{"AUTOPILOT_RUNNER", "APP_ENV", "TOGO_ENV", "GO_ENV", "ENV"} {
+		t.Setenv(n, "")
+	}
+	t.Setenv("AUTOPILOT_ALLOW_UNAUTHENTICATED", "1")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("AUTOPILOT_RUNNER", "0")
+	if err := (&server{hub: newHub()}).mountIfSafe(chi.NewRouter()); err != nil {
+		t.Fatalf("development must still mount with the opt-out: %v", err)
+	}
+}

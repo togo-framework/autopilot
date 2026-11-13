@@ -56,6 +56,7 @@ runs where the CLI is authed and the repo is writable.
 | Env | Default | Meaning |
 |---|---|---|
 | `AUTOPILOT_RUNNER` | _(off)_ | `1` starts the in-app runner |
+| `AUTOPILOT_ALLOW_UNAUTHENTICATED` | _(off)_ | `1` mounts Autopilot without the `auth` plugin. Local development only; by default Autopilot does not mount without `auth`. Refused (nothing mounts) together with `AUTOPILOT_RUNNER=1` or when `APP_ENV`, `TOGO_ENV`, `GO_ENV` or `ENV` is `production`/`prod` |
 | `AUTOPILOT_WORKDIR` | `.` | the git working tree the agent edits |
 | `AUTOPILOT_CLAUDE_BIN` | `claude` | Claude Code binary |
 | `AUTOPILOT_POLL_SECONDS` | `15` | queue poll interval |
