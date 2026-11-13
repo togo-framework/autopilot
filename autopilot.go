@@ -103,6 +103,9 @@ type server struct {
 	// allowUnauthenticated mounts the API without the auth plugin. Development
 	// only; set from AUTOPILOT_ALLOW_UNAUTHENTICATED=1.
 	allowUnauthenticated bool
+	// identity, when set, replaces the auth plugin's session lookup. Tests use it
+	// to act as a given account without a login.
+	identity func(*http.Request) (*auth.Identity, bool)
 }
 
 // errAuthRequired is returned when Autopilot would be mounted with no auth plugin.
@@ -157,22 +160,25 @@ func (s *server) mount(r chi.Router) {
 	r.Route("/api/autopilot", func(r chi.Router) {
 		// Guard with the auth session when the auth plugin is present. The
 		// Feedback SDK's public submit endpoint is mounted separately below.
-		if s.auth != nil {
+		if s.auth != nil && s.identity == nil {
 			r.Use(s.auth.Middleware)
 		}
-		r.Get("/issues", s.listIssues)
-		r.Post("/issues", s.createIssue)
-		r.Get("/issues/{id}", s.getIssue)
-		r.Patch("/issues/{id}", s.patchIssue)
-		r.Post("/issues/{id}/status", s.setStatus)
-		r.Get("/issues/{id}/comments", s.listComments)
-		r.Post("/issues/{id}/comments", s.addComment)
+		// Roles (see roles.go): every route needs a level, checked server side.
+		// Rules that depend on the issue (own issues, forced fields) are in the handlers.
+		viewer, reporter, operator := s.need(levelViewer), s.need(levelReporter), s.need(levelOperator)
+		r.With(viewer).Get("/issues", s.listIssues)
+		r.With(reporter, jsonOnly).Post("/issues", s.createIssue)
+		r.With(viewer).Get("/issues/{id}", s.getIssue)
+		r.With(reporter, jsonOnly).Patch("/issues/{id}", s.patchIssue)
+		r.With(operator, jsonOnly).Post("/issues/{id}/status", s.setStatus)
+		r.With(viewer).Get("/issues/{id}/comments", s.listComments)
+		r.With(reporter, jsonOnly).Post("/issues/{id}/comments", s.addComment)
 		// Media attachments (image/video/file) for an issue.
-		r.Post("/issues/{id}/attachments", s.uploadAttachment)
-		r.Get("/issues/{id}/attachments", s.listAttachments)
-		r.Get("/uploads/{uid}", s.serveUpload)
+		r.With(operator).Post("/issues/{id}/attachments", s.uploadAttachment)
+		r.With(viewer).Get("/issues/{id}/attachments", s.listAttachments)
+		r.With(viewer).Get("/uploads/{uid}", s.serveUpload)
 		// Real-time event stream (new issue, status move, new comment, …).
-		r.Get("/ws", s.serveWS)
+		r.With(viewer).Get("/ws", s.serveWS)
 	})
 
 	// Feedback SDK ingress — intentionally unauthenticated so a "feedback button

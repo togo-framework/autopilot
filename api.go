@@ -128,6 +128,33 @@ func (s *server) setIssueStatus(ctx context.Context, id, status string, fields m
 	return err
 }
 
+// updateOwnBacklog sets title/body only if the issue was created by owner AND is
+// still in backlog, in a single statement. It reports whether a row changed.
+func (s *server) updateOwnBacklog(ctx context.Context, id, owner string, fields map[string]string) (bool, error) {
+	db, ph := s.db(ctx)
+	if db == nil {
+		return false, sql.ErrConnDone
+	}
+	set := "updated_at=" + ph(1)
+	args := []any{nowStr()}
+	n := 2
+	for _, k := range []string{"title", "body"} {
+		if v, ok := fields[k]; ok {
+			set += ", " + k + "=" + ph(n)
+			args = append(args, v)
+			n++
+		}
+	}
+	args = append(args, id, owner, StatusBacklog)
+	res, err := db.ExecContext(ctx, "UPDATE autopilot_issues SET "+set+
+		" WHERE id="+ph(n)+" AND created_by="+ph(n+1)+" AND status="+ph(n+2), args...)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	return rows > 0, err
+}
+
 func (s *server) insertComment(ctx context.Context, c Comment) error {
 	db, ph := s.db(ctx)
 	if db == nil {
@@ -177,12 +204,17 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.actorFor(r)
+	if !ok {
+		writeErr(w, 401, "unauthorized")
+		return
+	}
+	// created_by is not read from the body: the creator is the signed-in account.
 	var body struct {
 		Title     string `json:"title"`
 		Body      string `json:"body"`
 		Kind      string `json:"kind"`
 		Assignee  string `json:"assignee"`
-		CreatedBy string `json:"created_by"`
 		Status    string `json:"status"`
 		Priority  string `json:"priority"`
 		HumanOnly bool   `json:"human_only"`
@@ -195,12 +227,21 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "title is required")
 		return
 	}
+	// Only an operator can start an issue anywhere but backlog, assign it, or
+	// mark it human-only; for everyone else those fields are ignored and the
+	// issue lands in backlog (it reaches the agent only when an operator moves it).
 	i := Issue{
 		ID: genID(), Title: strings.TrimSpace(body.Title), Body: body.Body,
-		Status: firstNonEmpty(body.Status, StatusBacklog), Kind: firstNonEmpty(body.Kind, "feature"),
-		Assignee: body.Assignee, Priority: firstNonEmpty(body.Priority, "normal"), HumanOnly: body.HumanOnly,
-		CreatedBy: firstNonEmpty(body.CreatedBy, "human"),
+		Status: StatusBacklog, Kind: firstNonEmpty(body.Kind, "feature"),
+		Priority: "normal",
+		CreatedBy: a.ID,
 		CreatedAt: nowStr(), UpdatedAt: nowStr(),
+	}
+	if a.Level >= levelOperator {
+		i.Status = firstNonEmpty(body.Status, StatusBacklog)
+		i.Assignee = body.Assignee
+		i.HumanOnly = body.HumanOnly
+		i.Priority = firstNonEmpty(body.Priority, "normal")
 	}
 	if !validStatus(i.Status) {
 		writeErr(w, 400, "invalid status")
@@ -220,6 +261,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	a, ok := s.actorFor(r)
+	if !ok {
+		writeErr(w, 401, "unauthorized")
+		return
+	}
 	cur, ok := s.getIssueByID(r.Context(), id)
 	if !ok {
 		writeErr(w, 404, "issue not found")
@@ -235,6 +281,38 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, err.Error())
+		return
+	}
+	// A reporter may only reword their own issue while it is still in backlog:
+	// title and body, nothing that steers the agent. The body of a ready issue
+	// is the prompt the runner executes, so the ownership/status check and the
+	// write are ONE conditional UPDATE (owner and status in the WHERE clause):
+	// an edit that races an operator moving the issue to ready cannot change
+	// the prompt.
+	if a.Level < levelOperator {
+		if body.Kind != nil || body.Assignee != nil || body.Priority != nil || body.HumanOnly != nil {
+			s.deny(w, r, a, levelOperator)
+			return
+		}
+		own := map[string]string{}
+		if body.Title != nil {
+			own["title"] = *body.Title
+		}
+		if body.Body != nil {
+			own["body"] = *body.Body
+		}
+		done, err := s.updateOwnBacklog(r.Context(), id, a.ID, own)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if !done {
+			s.deny(w, r, a, levelOperator)
+			return
+		}
+		updated, _ := s.getIssueByID(r.Context(), id)
+		s.emit("issue.updated", map[string]any{"id": id})
+		writeJSON(w, 200, updated)
 		return
 	}
 	fields := map[string]string{}
@@ -319,7 +397,22 @@ func (s *server) addComment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "issue not found")
 		return
 	}
-	var body struct{ Author, AuthorKind, Body string }
+	a, ok := s.actorFor(r)
+	if !ok {
+		writeErr(w, 401, "unauthorized")
+		return
+	}
+	// A reporter comments on issues they created; an operator on any issue.
+	if a.Level < levelOperator && !a.owns(issue.CreatedBy) {
+		s.deny(w, r, a, levelOperator)
+		return
+	}
+	// Only the body is read. The author and its kind come from the session:
+	// a person's comment is always "human"; "agent" and "system" are written by
+	// the runner and self-heal in code, never accepted over HTTP.
+	var body struct {
+		Body string `json:"body"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -328,12 +421,8 @@ func (s *server) addComment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "comment body is required")
 		return
 	}
-	kind := firstNonEmpty(body.AuthorKind, "human")
-	if !validAuthorKind(kind) {
-		writeErr(w, 400, "invalid author_kind")
-		return
-	}
-	c := Comment{ID: genID(), IssueID: id, Author: firstNonEmpty(body.Author, "human"),
+	kind := "human"
+	c := Comment{ID: genID(), IssueID: id, Author: a.Name,
 		AuthorKind: kind, Body: body.Body, CreatedAt: nowStr()}
 	if err := s.insertComment(r.Context(), c); err != nil {
 		writeErr(w, 500, err.Error())
@@ -341,7 +430,8 @@ func (s *server) addComment(w http.ResponseWriter, r *http.Request) {
 	}
 	s.emit("comment.added", map[string]any{"issue_id": id, "author_kind": kind, "title": issue.Title})
 	unblocked := false
-	if kind == "human" && issue.Status == StatusBlocked {
+	// Answering a blocked issue hands it back to the agent, so only an operator can.
+	if a.Level >= levelOperator && issue.Status == StatusBlocked {
 		if err := s.setIssueStatus(r.Context(), id, StatusReady, map[string]string{"claimed_by": "", "claimed_at": ""}); err == nil {
 			unblocked = true
 			s.emit("issue.status", map[string]any{"id": id, "status": StatusReady, "title": issue.Title})
@@ -371,7 +461,7 @@ func (s *server) submitFeedback(w http.ResponseWriter, r *http.Request) {
 		desc += "\n\n— from " + body.Page
 	}
 	i := Issue{ID: genID(), Title: title, Body: desc, Status: StatusBacklog, Kind: "feedback",
-		CreatedBy: firstNonEmpty(body.User, "feedback"), CreatedAt: nowStr(), UpdatedAt: nowStr()}
+		CreatedBy: "feedback", CreatedAt: nowStr(), UpdatedAt: nowStr()}
 	if err := s.insertIssue(r.Context(), i); err != nil {
 		writeErr(w, 500, err.Error())
 		return

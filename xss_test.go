@@ -56,28 +56,30 @@ func TestFreeTextKindIsRejected(t *testing.T) {
 	}
 }
 
-func TestFreeTextAuthorKindIsRejected(t *testing.T) {
+// author and author_kind are not accepted from the client at all: the comment is
+// stored as a human comment written by the signed-in account, whatever the body
+// says, so a script-bearing value can never reach the board.
+func TestClientAuthorFieldsAreIgnored(t *testing.T) {
 	s := newTestServer(t)
 	i := Issue{ID: genID(), Title: "ok", Status: StatusBacklog, Kind: "bug", CreatedAt: nowStr(), UpdatedAt: nowStr()}
 	if err := s.insertIssue(context.Background(), i); err != nil {
 		t.Fatal(err)
 	}
-	post := func(kind string) int {
-		b, _ := json.Marshal(map[string]string{"author": "a", "AuthorKind": kind, "body": "hi"})
+	for _, k := range []string{xssPayload, "agent", "system", "human"} {
+		b, _ := json.Marshal(map[string]string{"author": xssPayload, "AuthorKind": k, "author_kind": k, "body": "hi"})
 		req := httptest.NewRequest("POST", "/api/autopilot/issues/"+i.ID+"/comments", bytes.NewReader(b))
 		rc := chi.NewRouteContext()
 		rc.URLParams.Add("id", i.ID)
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rc))
 		w := httptest.NewRecorder()
 		s.addComment(w, req)
-		return w.Code
+		if w.Code != 201 {
+			t.Fatalf("author_kind %q = %d, want 201", k, w.Code)
+		}
 	}
-	if c := post(xssPayload); c != 400 {
-		t.Fatalf("script-bearing author_kind = %d, want 400", c)
-	}
-	for _, k := range []string{"human", "agent", "system"} {
-		if c := post(k); c != 201 {
-			t.Errorf("author_kind %q = %d, want 201", k, c)
+	for _, c := range s.commentsFor(context.Background(), i.ID) {
+		if c.AuthorKind != "human" || c.Author != "dev" {
+			t.Errorf("comment stored as %q/%q, want human/dev", c.AuthorKind, c.Author)
 		}
 	}
 }
