@@ -146,7 +146,12 @@ Things to know:
   (`AUTH_TTL_HOURS`, 24 h by default). Every write (POST/PATCH: create, edit,
   status, comment, upload) re-reads the account's current roles with the auth
   plugin's `UserByID`, so a demoted operator gets `403` and a deleted account
-  `401` on the very next write. This costs one account lookup per write.
+  `401` on the very next write. This costs one account lookup per write. If the
+  account store cannot be read, the write gets `503` (retry later), not `401`.
+- A personal access token (`togo_pat_...`) is scoped to its own abilities and
+  carries no Autopilot role. It is never upgraded to the account's roles: every
+  Autopilot route answers `403` for it, and it cannot hold a live stream. Use a
+  session (sign-in) token for Autopilot.
 - An open live-stream (WebSocket) connection re-checks its account every 30
   seconds against the auth plugin's `UserByID` (current roles) and re-validates
   the session. If the role was revoked, the account deleted or the session

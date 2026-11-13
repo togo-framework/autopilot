@@ -3,6 +3,9 @@ package autopilot
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -222,5 +225,101 @@ func TestRealAuthWritesReadRolesFromTheDatabase(t *testing.T) {
 	}
 	if code := writeWith(h, "POST", base+"/status", ghost, `{"status":"ready"}`); code != 401 {
 		t.Errorf("deleted account write = %d, want 401", code)
+	}
+}
+
+
+// realDB opens a second handle on the in-memory database that realAuth booted, so
+// a test can write rows the auth plugin reads (a PAT) or break the store.
+func realDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())+"?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// patFor stores a personal access token for the account the way the auth plugin
+// does (only the sha256 is kept) and returns the token to send.
+func patFor(t *testing.T, db *sql.DB, userID, abilities string) string {
+	t.Helper()
+	tok := "togo_pat_" + strings.Repeat("ab12", 10)
+	sum := sha256.Sum256([]byte(tok))
+	_, err := db.Exec(`INSERT INTO personal_access_tokens (id, user_id, name, token_hash, abilities, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		"pat1", userID, "ci", hex.EncodeToString(sum[:]), abilities, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+// A personal access token is scoped to its abilities and carries no Autopilot
+// role. The write path must NOT swap it for the account's full roles: a PAT of an
+// operator account stays refused, on writes and on reads, and cannot hold a stream.
+func TestRealAuthPATNeverGetsTheAccountRoles(t *testing.T) {
+	svc, s, h := realAuth(t)
+	id, jwt := bearer(t, svc, "pat-owner@example.com", "autopilot:operator")
+	pat := patFor(t, realDB(t), id, "read:issues")
+	i := seedIssue(t, s, "pat-owner", StatusBacklog)
+	base := "/api/autopilot/issues/" + i.ID
+
+	// control: the same account's session token still works
+	if code := writeWith(h, "POST", base+"/comments", jwt, `{"body":"from the session"}`); code != 200 && code != 201 {
+		t.Fatalf("operator session write = %d, want success", code)
+	}
+
+	for _, c := range []struct{ name, method, path, body string }{
+		{"status", "POST", base + "/status", `{"status":"ready"}`},
+		{"comment", "POST", base + "/comments", `{"body":"from the pat"}`},
+		{"edit", "PATCH", base, `{"title":"hijacked"}`},
+		{"create", "POST", "/api/autopilot/issues", `{"title":"n","kind":"bug"}`},
+		{"read", "GET", base, ""},
+	} {
+		if code := writeWith(h, c.method, c.path, pat, c.body); code != 403 {
+			t.Errorf("PAT %s = %d, want 403", c.name, code)
+		}
+	}
+
+	got, ok := s.getIssueByID(context.Background(), i.ID)
+	if !ok {
+		t.Fatal("issue vanished")
+	}
+	if got.Status != StatusBacklog || got.Title == "hijacked" {
+		t.Fatalf("a PAT changed the issue: status %q title %q", got.Status, got.Title)
+	}
+	if s.stillAllowed(context.Background(), withToken("GET", "/api/autopilot/ws", pat)) {
+		t.Fatal("a PAT must not keep an open stream")
+	}
+}
+
+// A store error while the account is re-read is a 503 (retry later), not a 401: the
+// caller is not unauthenticated. Only an account the store no longer has is a 401.
+func TestRealAuthStoreErrorIs503DeletedAccountIs401(t *testing.T) {
+	svc, s, h := realAuth(t)
+	_, tok := bearer(t, svc, "store@example.com", "autopilot:operator")
+	i := seedIssue(t, s, "store", StatusBacklog)
+	base := "/api/autopilot/issues/" + i.ID
+
+	ghost, err := svc.IssueToken(auth.Identity{ID: "ghost", Email: "g@example.com", Roles: []string{"autopilot:operator"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := writeWith(h, "POST", base+"/status", ghost, `{"status":"ready"}`); code != 401 {
+		t.Errorf("deleted account = %d, want 401", code)
+	}
+
+	if _, err := realDB(t).Exec(`ALTER TABLE users RENAME TO users_offline`); err != nil {
+		t.Fatal(err)
+	}
+	if code := writeWith(h, "POST", base+"/status", tok, `{"status":"ready"}`); code != 503 {
+		t.Errorf("store error on a write = %d, want 503", code)
+	}
+	if code := writeWith(h, "GET", base, tok, ""); code != 200 {
+		t.Errorf("a read uses the token roles and needs no lookup = %d, want 200", code)
+	}
+	if got, ok := s.getIssueByID(context.Background(), i.ID); !ok || got.Status != StatusBacklog {
+		t.Fatalf("a failed lookup must not change the issue: %v %v", got, ok)
 	}
 }
