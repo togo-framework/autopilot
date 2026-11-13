@@ -14,19 +14,19 @@ import (
 // the agent runner can pick it up and fix it — closing the loop from "prod
 // broke" to "agent opened a fix PR" with no human in the middle.
 //
-// Opt-in via AUTOPILOT_SELF_HEAL=1 (and AUTOPILOT_SELF_HEAL_READY=1 to file the
-// bug straight to `ready` so an agent starts immediately instead of `backlog`).
+// Opt-in via AUTOPILOT_SELF_HEAL=1. Bugs are always filed to `backlog`: the
+// request path and error text are attacker-influenced, so a human (an operator)
+// decides when an agent starts on them.
 
 type healer struct {
 	s        *server
 	mu       sync.Mutex
 	seen     map[string]time.Time // fingerprint -> last filed
 	cooldown time.Duration
-	ready    bool
 }
 
 func (s *server) selfHealMiddleware() func(http.Handler) http.Handler {
-	h := &healer{s: s, seen: map[string]time.Time{}, cooldown: time.Hour, ready: envBool("AUTOPILOT_SELF_HEAL_READY")}
+	h := &healer{s: s, seen: map[string]time.Time{}, cooldown: time.Hour}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Never self-reference: skip autopilot's own surfaces.
@@ -62,10 +62,6 @@ func (h *healer) file(r *http.Request, summary, stack string) {
 	h.seen[fp] = time.Now()
 	h.mu.Unlock()
 
-	status := StatusBacklog
-	if h.ready {
-		status = StatusReady
-	}
 	body := "Auto-filed by self-healing.\n\n" +
 		"- Request: `" + r.Method + " " + r.URL.Path + "`\n" +
 		"- Detail: " + summary + "\n"
@@ -74,7 +70,7 @@ func (h *healer) file(r *http.Request, summary, stack string) {
 	}
 	title := "🔧 " + trim(summary, 120)
 	_ = h.s.insertIssue(r.Context(), Issue{
-		ID: genID(), Title: title, Body: body, Status: status, Kind: "bug",
+		ID: genID(), Title: title, Body: body, Status: StatusBacklog, Kind: "bug",
 		CreatedBy: "self-heal", CreatedAt: nowStr(), UpdatedAt: nowStr(),
 	})
 }
