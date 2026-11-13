@@ -141,15 +141,22 @@ UPDATE users SET roles = roles || ',autopilot:operator' WHERE email = 'you@examp
 
 Things to know:
 
-- Roles are baked into the session token when it is issued, so a revoked role
-  stays valid until that token expires (`AUTH_TTL_HOURS`, 24 h by default).
-  Shorten the TTL if you need faster revocation.
+- Roles are baked into the session token when it is issued. Reads (GET) use
+  those token roles, so a revoked role can still read until the token expires
+  (`AUTH_TTL_HOURS`, 24 h by default). Every write (POST/PATCH: create, edit,
+  status, comment, upload) re-reads the account's current roles with the auth
+  plugin's `UserByID`, so a demoted operator gets `403` and a deleted account
+  `401` on the very next write. This costs one account lookup per write. If the
+  account store cannot be read, the write gets `503` (retry later), not `401`.
+- A personal access token (`togo_pat_...`) is scoped to its own abilities and
+  carries no Autopilot role. It is never upgraded to the account's roles: every
+  Autopilot route answers `403` for it, and it cannot hold a live stream. Use a
+  session (sign-in) token for Autopilot.
 - An open live-stream (WebSocket) connection re-checks its account every 30
   seconds against the auth plugin's `UserByID` (current roles) and re-validates
   the session. If the role was revoked, the account deleted or the session
   expired, the stream is closed (policy violation) and a reconnect is refused.
-  The `Origin` is checked when the connection opens. HTTP calls still use the
-  roles in the session token until it expires (see above).
+  The `Origin` is checked when the connection opens.
 - Attachment uploads are `multipart/form-data`, so they are not covered by the
   JSON-only rule; instead a browser request whose `Origin` is not this host
   (including a sibling subdomain or `null`) is refused with `403`. Requests with

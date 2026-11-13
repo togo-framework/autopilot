@@ -67,25 +67,72 @@ func levelOf(id *auth.Identity) level {
 	return levelNone
 }
 
-// actorFor resolves the caller. ok is false when there is no authenticated
-// session (the caller gets 401). Without the auth plugin (only possible with the
-// development-only opt-out) the caller is a local operator.
+type actorCtxKey struct{}
+
+// safeMethod reports a read-only HTTP method. Reads may use the roles baked into
+// the session token; every other method re-reads them from the account.
+func safeMethod(m string) bool {
+	return m == http.MethodGet || m == http.MethodHead || m == http.MethodOptions
+}
+
+// patGuard is the auth plugin's guard name for a personal access token (PAT).
+const patGuard = "pat"
+
+// actorFor resolves the caller for a handler. ok is false when there is no
+// usable session; the route guard (need) has already answered 401/503 by then.
 func (s *server) actorFor(r *http.Request) (actor, bool) {
+	a, status := s.resolveActor(r)
+	return a, status == 0
+}
+
+// resolveActor resolves the caller and returns 0, or the HTTP status to answer:
+// 401 without a session or for a deleted account, 503 when the account store
+// cannot be read (the caller may retry; it is not an authentication failure).
+// Without the auth plugin (only possible with the development-only opt-out) the
+// caller is a local operator.
+//
+// A read (GET/HEAD/OPTIONS) uses the roles in the session token. A write
+// (POST/PATCH/...) re-reads the account's CURRENT roles with auth UserByID: an
+// operator's write starts code on the runner, so a revoked or deleted operator
+// must stop at once, not when the token expires (up to AUTH_TTL_HOURS, 24 h by
+// default). The result is cached on the request so a handler does not read twice.
+//
+// A personal access token is scoped to its abilities and carries no Autopilot
+// role. UserByID would hand it the account's FULL roles, so a PAT is never
+// upgraded: it keeps its own identity (no role, level none) and every route
+// answers 403. Autopilot does not map PAT abilities to roles.
+func (s *server) resolveActor(r *http.Request) (actor, int) {
+	if a, ok := r.Context().Value(actorCtxKey{}).(actor); ok {
+		return a, 0
+	}
 	if s.identity != nil {
 		id, ok := s.identity(r)
 		if !ok || id == nil {
-			return actor{}, false
+			return actor{}, http.StatusUnauthorized
 		}
-		return newActor(id), true
+		return newActor(id), 0
 	}
 	if s.auth == nil {
-		return actor{ID: "dev", Name: "dev", Level: levelOperator}, true
+		return actor{ID: "dev", Name: "dev", Level: levelOperator}, 0
 	}
 	id, ok := auth.IdentityFrom(r.Context())
 	if !ok || id == nil {
-		return actor{}, false
+		return actor{}, http.StatusUnauthorized
 	}
-	return newActor(id), true
+	if id.Guard == patGuard {
+		return actor{ID: id.ID, Name: firstNonEmpty(id.Email, id.ID), Level: levelNone}, 0
+	}
+	if !safeMethod(r.Method) {
+		cur, err := s.auth.UserByID(r.Context(), id.ID)
+		if err != nil {
+			return actor{}, http.StatusServiceUnavailable // store error: not a login failure
+		}
+		if cur == nil {
+			return actor{}, http.StatusUnauthorized // deleted account (the store finds no row)
+		}
+		id = cur
+	}
+	return newActor(id), 0
 }
 
 func newActor(id *auth.Identity) actor {
@@ -98,8 +145,12 @@ func newActor(id *auth.Identity) actor {
 func (s *server) need(min level) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			a, ok := s.actorFor(r)
-			if !ok {
+			a, status := s.resolveActor(r)
+			if status == http.StatusServiceUnavailable {
+				writeErr(w, status, "temporarily unavailable")
+				return
+			}
+			if status != 0 {
 				writeErr(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -108,7 +159,7 @@ func (s *server) need(min level) func(http.Handler) http.Handler {
 				writeErr(w, http.StatusForbidden, "forbidden")
 				return
 			}
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), actorCtxKey{}, a)))
 		})
 	}
 }
@@ -163,8 +214,8 @@ func (s *server) stillAllowed(ctx context.Context, r *http.Request) bool {
 		return true // development opt-out: no accounts to revoke
 	}
 	id, err := s.auth.Authenticate(r)
-	if err != nil || id == nil {
-		return false
+	if err != nil || id == nil || id.Guard == patGuard {
+		return false // a PAT has no Autopilot role and may not hold a stream
 	}
 	cur, err := s.auth.UserByID(ctx, id.ID)
 	if err != nil || cur == nil {
