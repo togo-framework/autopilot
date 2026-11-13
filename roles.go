@@ -67,10 +67,27 @@ func levelOf(id *auth.Identity) level {
 	return levelNone
 }
 
+type actorCtxKey struct{}
+
+// safeMethod reports a read-only HTTP method. Reads may use the roles baked into
+// the session token; every other method re-reads them from the account.
+func safeMethod(m string) bool {
+	return m == http.MethodGet || m == http.MethodHead || m == http.MethodOptions
+}
+
 // actorFor resolves the caller. ok is false when there is no authenticated
 // session (the caller gets 401). Without the auth plugin (only possible with the
 // development-only opt-out) the caller is a local operator.
+//
+// A read (GET/HEAD/OPTIONS) uses the roles in the session token. A write
+// (POST/PATCH/...) re-reads the account's CURRENT roles with auth UserByID: an
+// operator's write starts code on the runner, so a revoked or deleted operator
+// must stop at once, not when the token expires (up to AUTH_TTL_HOURS, 24 h by
+// default). The result is cached on the request so a handler does not read twice.
 func (s *server) actorFor(r *http.Request) (actor, bool) {
+	if a, ok := r.Context().Value(actorCtxKey{}).(actor); ok {
+		return a, true
+	}
 	if s.identity != nil {
 		id, ok := s.identity(r)
 		if !ok || id == nil {
@@ -84,6 +101,13 @@ func (s *server) actorFor(r *http.Request) (actor, bool) {
 	id, ok := auth.IdentityFrom(r.Context())
 	if !ok || id == nil {
 		return actor{}, false
+	}
+	if !safeMethod(r.Method) {
+		cur, err := s.auth.UserByID(r.Context(), id.ID)
+		if err != nil || cur == nil {
+			return actor{}, false // deleted account or store error: fail closed
+		}
+		id = cur
 	}
 	return newActor(id), true
 }
@@ -108,7 +132,7 @@ func (s *server) need(min level) func(http.Handler) http.Handler {
 				writeErr(w, http.StatusForbidden, "forbidden")
 				return
 			}
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), actorCtxKey{}, a)))
 		})
 	}
 }

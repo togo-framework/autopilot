@@ -1,6 +1,7 @@
 package autopilot
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -157,5 +158,69 @@ func TestRealAuthWebSocketClosesOnRevoke(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("stream still open after the role was removed in the database")
+	}
+}
+
+func writeWith(h http.Handler, method, path, token, body string) int {
+	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w.Code
+}
+
+// A write re-reads the account's CURRENT roles, so an operator who is demoted or
+// deleted stops writing at once although the token (24 h) still lists the role.
+// A read may still use the roles in the token.
+func TestRealAuthWritesReadRolesFromTheDatabase(t *testing.T) {
+	svc, s, h := realAuth(t)
+	ctx := context.Background()
+	id, tok := bearer(t, svc, "w@example.com", "autopilot:operator")
+	i := seedIssue(t, s, "w", StatusBacklog)
+	base := "/api/autopilot/issues/" + i.ID
+	writes := func() []int {
+		return []int{
+			writeWith(h, "POST", base+"/status", tok, `{"status":"ready"}`),
+			writeWith(h, "POST", base+"/comments", tok, `{"body":"x"}`),
+			writeWith(h, "PATCH", base, tok, `{"title":"new"}`),
+			writeWith(h, "POST", "/api/autopilot/issues", tok, `{"title":"n","kind":"bug"}`),
+		}
+	}
+
+	for n, code := range writes() {
+		if code != 200 && code != 201 {
+			t.Fatalf("operator write #%d = %d, want success", n, code)
+		}
+	}
+
+	if err := svc.SetRoles(ctx, id, []string{"autopilot:viewer"}); err != nil {
+		t.Fatal(err)
+	}
+	for n, code := range writes() {
+		if code != 403 {
+			t.Errorf("demoted to viewer, write #%d = %d, want 403", n, code)
+		}
+	}
+	if code := writeWith(h, "GET", base, tok, ""); code != 200 {
+		t.Errorf("read with a token role = %d, want 200", code)
+	}
+
+	if err := svc.SetRoles(ctx, id, nil); err != nil {
+		t.Fatal(err)
+	}
+	for n, code := range writes() {
+		if code != 403 {
+			t.Errorf("roles removed, write #%d = %d, want 403", n, code)
+		}
+	}
+
+	// a valid token for an account that no longer exists
+	ghost, err := svc.IssueToken(auth.Identity{ID: "ghost", Email: "g@example.com", Roles: []string{"autopilot:operator"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := writeWith(h, "POST", base+"/status", ghost, `{"status":"ready"}`); code != 401 {
+		t.Errorf("deleted account write = %d, want 401", code)
 	}
 }
