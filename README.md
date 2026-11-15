@@ -40,12 +40,12 @@ backlog ─(human: hand off)→ ready ─(agent claims)→ in_progress
 | Method | Path | Purpose |
 |---|---|---|
 | `GET`  | `/api/autopilot/issues[?status=]` | list issues |
-| `POST` | `/api/autopilot/issues` | create `{title, body, kind, assignee, status}` |
+| `POST` | `/api/autopilot/issues` | create `{title, body, kind}`; an operator may also set `{assignee, status, priority, human_only}` |
 | `GET`  | `/api/autopilot/issues/{id}` | issue + comments |
-| `PATCH`| `/api/autopilot/issues/{id}` | edit title/body/kind/assignee |
+| `PATCH`| `/api/autopilot/issues/{id}` | edit title/body/kind/assignee/priority/human_only (a reporter: title/body of their own backlog issue only) |
 | `POST` | `/api/autopilot/issues/{id}/status` | transition `{status}` (e.g. `ready`, `done`) |
 | `GET`  | `/api/autopilot/issues/{id}/comments` | thread |
-| `POST` | `/api/autopilot/issues/{id}/comments` | add `{author, author_kind, body}` — human comment on a **blocked** issue unblocks it |
+| `POST` | `/api/autopilot/issues/{id}/comments` | add `{body}` (author comes from the session) — an operator's comment on a **blocked** issue unblocks it |
 | `POST` | `/api/autopilot/feedback` | Feedback SDK ingress (unauthenticated) `{message, page, user}` |
 
 ## The runner
@@ -56,6 +56,8 @@ runs where the CLI is authed and the repo is writable.
 | Env | Default | Meaning |
 |---|---|---|
 | `AUTOPILOT_RUNNER` | _(off)_ | `1` starts the in-app runner |
+| `AUTOPILOT_ALLOW_UNAUTHENTICATED` | _(off)_ | `1` mounts Autopilot without the `auth` plugin. Local development only; by default Autopilot does not mount without `auth`. Refused (nothing mounts) together with `AUTOPILOT_RUNNER=1` or when `APP_ENV`, `TOGO_ENV`, `GO_ENV` or `ENV` is `production`/`prod` |
+| `AUTOPILOT_WS_ORIGINS` | _(same origin)_ | Extra origin hosts allowed to open the live event stream, comma separated |
 | `AUTOPILOT_WORKDIR` | `.` | the git working tree the agent edits |
 | `AUTOPILOT_CLAUDE_BIN` | `claude` | Claude Code binary |
 | `AUTOPILOT_POLL_SECONDS` | `15` | queue poll interval |
@@ -106,6 +108,64 @@ launcher. Clicking a toast opens the board **deep-linked to that issue**
 (`/autopilot?issue=<id>`) so you can follow up in one click. `window.Autopilot`
 exposes `open`/`openTo`/`close`/`toggle`/`notify`; `data-toasts="off"` disables
 the toasts.
+
+## Roles
+
+Autopilot has no user table of its own. It uses the roles of the `auth` plugin,
+with these fixed names (matched exactly; there is no setting to change them, and
+the host app's own `admin`/`viewer` roles grant nothing here):
+
+| Role | Can |
+|---|---|
+| `autopilot:viewer` | read issues, comments, attachments and the live stream |
+| `autopilot:reporter` | viewer + create issues (always created as `backlog`), comment on and reword (title/body, while still `backlog`) the issues they created |
+| `autopilot:operator` | reporter + hand work to the agent (`ready`), change status, assign, set priority/`human_only`, edit and comment on any issue, upload attachments |
+
+A signed-in user with none of these gets `403` on every data route and the live
+stream; no session is `401`. The board page itself (`/autopilot`) is only a shell:
+all data calls behind it are guarded. The public feedback ingress
+(`/api/autopilot/feedback`) stays open and always files a `backlog` issue.
+
+> **`autopilot:operator` is code execution on the runner host when
+> `AUTOPILOT_RUNNER=1`**: an operator decides which issues the agent works on,
+> and the issue text is its prompt. Grant it like root, to few people.
+
+**Breaking change:** installs that have the `auth` plugin but no Autopilot roles
+get `403` until a role is granted. Nothing is granted automatically. Roles are a
+comma-separated list in `users.roles`:
+
+```sql
+UPDATE users SET roles = roles || ',autopilot:operator' WHERE email = 'you@example.com';
+-- or, if roles is empty: SET roles = 'autopilot:operator'
+```
+
+Things to know:
+
+- Roles are baked into the session token when it is issued. Reads (GET) use
+  those token roles, so a revoked role can still read until the token expires
+  (`AUTH_TTL_HOURS`, 24 h by default). Every write (POST/PATCH: create, edit,
+  status, comment, upload) re-reads the account's current roles with the auth
+  plugin's `UserByID`, so a demoted operator gets `403` and a deleted account
+  `401` on the very next write. This costs one account lookup per write. If the
+  account store cannot be read, the write gets `503` (retry later), not `401`.
+- A personal access token (`togo_pat_...`) is scoped to its own abilities and
+  carries no Autopilot role. It is never upgraded to the account's roles: every
+  Autopilot route answers `403` for it, and it cannot hold a live stream. Use a
+  session (sign-in) token for Autopilot.
+- An open live-stream (WebSocket) connection re-checks its account every 30
+  seconds against the auth plugin's `UserByID` (current roles) and re-validates
+  the session. If the role was revoked, the account deleted or the session
+  expired, the stream is closed (policy violation) and a reconnect is refused.
+  The `Origin` is checked when the connection opens.
+- Attachment uploads are `multipart/form-data`, so they are not covered by the
+  JSON-only rule; instead a browser request whose `Origin` is not this host
+  (including a sibling subdomain or `null`) is refused with `403`. Requests with
+  no `Origin` (curl, server-side clients) are not affected.
+- Personal access tokens carry abilities, not roles, so a PAT is refused (`403`).
+- The mutating routes accept `application/json` bodies only (`415` otherwise).
+- Self-healing (`AUTOPILOT_SELF_HEAL=1`) files bugs as `backlog` only; an
+  operator decides when the agent starts.
+- Autopilot is single-tenant: every viewer sees every issue.
 
 ## Security
 

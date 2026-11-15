@@ -81,7 +81,9 @@ async function j(method, path, body){
   if(!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.status);
   return r.json();
 }
-function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+function esc(s){return (s==null?"":String(s)).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function safeUrl(u){return /^https?:\/\//i.test(u||"")?u:"#"}
+function cls(s){return String(s||"").replace(/[^a-z0-9_-]/gi,"")}
 
 async function load(){
   try{ ISSUES = await j("GET","/issues"); }catch(e){ document.getElementById("board").innerHTML = '<div class="muted" style="padding:20px">Not authorized or API unavailable: '+esc(e.message)+'</div>'; return; }
@@ -92,8 +94,8 @@ function render(){
   document.getElementById("board").innerHTML = COLS.map(([s,label])=>{
     const items = ISSUES.filter(i=>i.status===s);
     return `<div class="col"><h3>${label} <span class="n">${items.length}</span></h3>`+
-      items.map(i=>`<div class="card" onclick="openDrawer('${i.id}')"><div class="t">${esc(i.title)}</div>
-        <div class="m"><span class="tag ${i.kind}">${i.kind}</span>${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.branch?`<span class="tag">⎇ ${esc(i.branch.split("/").pop())}</span>`:""}</div></div>`).join("")+
+      items.map(i=>`<div class="card" onclick="openDrawer('${cls(i.id)}')"><div class="t">${esc(i.title)}</div>
+        <div class="m"><span class="tag ${cls(i.kind)}">${esc(i.kind)}</span>${i.assignee?`<span class="tag">@${esc(i.assignee)}</span>`:""}${i.branch?`<span class="tag">⎇ ${esc(i.branch.split("/").pop())}</span>`:""}</div></div>`).join("")+
       `</div>`;
   }).join("");
 }
@@ -115,12 +117,12 @@ async function openDrawer(id){
   if(issue.status==="blocked") acts.push(`<span class="muted">Reply below to unblock →</span>`);
   document.getElementById("drawer").innerHTML =
     `<div class="row" style="justify-content:space-between"><span class="status ${issue.status}">${issue.status}</span><button onclick="closeDrawer()">✕</button></div>
-     <h2>${esc(issue.title)}</h2><div class="id">${issue.id}${issue.pr_url?` · <a href="${esc(issue.pr_url)}" target="_blank" style="color:var(--accent)">PR</a>`:""}</div>
+     <h2>${esc(issue.title)}</h2><div class="id">${esc(issue.id)}${issue.pr_url?` · <a href="${esc(safeUrl(issue.pr_url))}" target="_blank" style="color:var(--accent)">PR</a>`:""}</div>
      ${issue.body?`<pre>${esc(issue.body)}</pre>`:""}
      <div class="row">${acts.join("")}</div>
      ${issue.result?`<div class="muted" style="font-size:12px">Last agent result:</div><pre>${esc(issue.result)}</pre>`:""}
      <h3 style="font-size:13px;margin:16px 0 4px">Thread</h3>
-     <div id="thread">${comments.map(c=>`<div class="comment ${c.author_kind}"><div class="who"><b class="${c.author_kind}">${esc(c.author)}</b> · ${c.author_kind} · ${esc(c.created_at)}</div><div>${esc(c.body).replace(/\\n/g,"<br>")}</div></div>`).join("")||'<div class="muted">No comments yet.</div>'}</div>
+     <div id="thread">${comments.map(c=>`<div class="comment ${cls(c.author_kind)}"><div class="who"><b class="${cls(c.author_kind)}">${esc(c.author)}</b> · ${esc(c.author_kind)} · ${esc(c.created_at)}</div><div>${esc(c.body).replace(/\\n/g,"<br>")}</div></div>`).join("")||'<div class="muted">No comments yet.</div>'}</div>
      <div class="row"><textarea id="c-body" rows="2" placeholder="${issue.status==="blocked"?"Answer to unblock the agent…":"Add a comment…"}"></textarea></div>
      <div class="row"><button class="primary" onclick="addComment('${id}')">Comment${issue.status==="blocked"?" & unblock":""}</button></div>`;
   document.getElementById("overlay").classList.add("on");

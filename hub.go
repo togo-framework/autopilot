@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,13 +66,31 @@ func (s *server) emit(event string, fields map[string]any) {
 	}
 }
 
+// wsOriginPatterns returns the extra origin host patterns allowed to open the
+// event stream, from AUTOPILOT_WS_ORIGINS. Empty means same-origin only.
+func wsOriginPatterns() []string {
+	var out []string
+	for _, p := range strings.Split(os.Getenv("AUTOPILOT_WS_ORIGINS"), ",") {
+		if p = strings.TrimSpace(p); p != "" && p != "*" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// wsRecheckEvery is how often an open stream re-checks that its account still
+// has an Autopilot role. A variable so tests can shorten it.
+var wsRecheckEvery = 30 * time.Second
+
 // serveWS upgrades to a WebSocket and streams events until the client leaves.
 func (s *server) serveWS(w http.ResponseWriter, r *http.Request) {
 	if s.hub == nil {
 		http.Error(w, "realtime not available", http.StatusServiceUnavailable)
 		return
 	}
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	// Same-origin only by default (the library compares Origin with Host).
+	// AUTOPILOT_WS_ORIGINS adds extra allowed origin host patterns, comma separated.
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: wsOriginPatterns()})
 	if err != nil {
 		return
 	}
@@ -94,10 +114,19 @@ func (s *server) serveWS(w http.ResponseWriter, r *http.Request) {
 	_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"hello"}`))
 	ping := time.NewTicker(30 * time.Second)
 	defer ping.Stop()
+	recheck := time.NewTicker(wsRecheckEvery)
+	defer recheck.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-recheck.C:
+			// A revoked role (or an expired session) ends the stream; the client
+			// reconnects and the handshake is refused.
+			if !s.stillAllowed(ctx, r) {
+				_ = c.Close(websocket.StatusPolicyViolation, "access revoked")
+				return
+			}
 		case msg, ok := <-client.send:
 			if !ok {
 				return
