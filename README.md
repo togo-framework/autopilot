@@ -39,6 +39,7 @@ backlog ─(human: hand off)→ ready ─(agent claims)→ in_progress
 
 | Method | Path | Purpose |
 |---|---|---|
+| `GET`  | `/api/autopilot/me` | the caller's current Autopilot level `{id, level, source}` (see Roles) |
 | `GET`  | `/api/autopilot/issues[?status=]` | list issues |
 | `POST` | `/api/autopilot/issues` | create `{title, body, kind}`; an operator may also set `{assignee, status, priority, human_only}` |
 | `GET`  | `/api/autopilot/issues/{id}` | issue + comments |
@@ -148,6 +149,13 @@ Things to know:
   plugin's `UserByID`, so a demoted operator gets `403` and a deleted account
   `401` on the very next write. This costs one account lookup per write. If the
   account store cannot be read, the write gets `503` (retry later), not `401`.
+- `GET /api/autopilot/me` tells a signed-in client its current level, so it can decide which
+  controls to show: `{"id": "...", "level": "none|viewer|reporter|operator", "source": "database|token"}`.
+  The level is read from the account (`UserByID`) like a write, so a demotion shows at once
+  (`source: database`). An account with no Autopilot role gets `200` with `level: none`, not `403`.
+  A personal access token answers `level: none` (`source: token`). No session, an expired token
+  or a deleted account is `401`; an account store that cannot be read is `503`. It never returns
+  role names, e-mail or permissions, and is sent with `Cache-Control: no-store`.
 - A personal access token (`togo_pat_...`) is scoped to its own abilities and
   carries no Autopilot role. It is never upgraded to the account's roles: every
   Autopilot route answers `403` for it, and it cannot hold a live stream. Use a

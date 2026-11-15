@@ -166,6 +166,8 @@ func (s *server) mount(r chi.Router) {
 		// Roles (see roles.go): every route needs a level, checked server side.
 		// Rules that depend on the issue (own issues, forced fields) are in the handlers.
 		viewer, reporter, operator := s.need(levelViewer), s.need(levelReporter), s.need(levelOperator)
+		// Own access level: any signed-in caller, "none" instead of 403 (see me.go).
+		r.Get("/me", s.me)
 		r.With(viewer).Get("/issues", s.listIssues)
 		r.With(reporter, jsonOnly).Post("/issues", s.createIssue)
 		r.With(viewer).Get("/issues/{id}", s.getIssue)
