@@ -27,6 +27,9 @@ type meResponse struct {
 // No session or an expired token is 401, a deleted account 401, and an account
 // store that cannot be read 503, the same split as the write path.
 func (s *server) me(w http.ResponseWriter, r *http.Request) {
+	// Per caller and changes with a role grant: no status is ever cached, so a shared
+	// cache cannot keep a 401 or a 503 and show it to the next caller.
+	w.Header().Set("Cache-Control", "no-store")
 	out, status := s.currentAccess(r)
 	if status == http.StatusServiceUnavailable {
 		writeErr(w, status, "temporarily unavailable")
@@ -36,8 +39,6 @@ func (s *server) me(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	// The answer is per account and changes with a role grant: never cached.
-	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, out)
 }
 

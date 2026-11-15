@@ -158,6 +158,9 @@ func errOptOutConflict(with string) error {
 
 func (s *server) mount(r chi.Router) {
 	r.Route("/api/autopilot", func(r chi.Router) {
+		// GET /me is per caller: no answer is cached, including the 401 the auth
+		// middleware below gives to a missing or bad token (it runs before me()).
+		r.Use(noStoreMe)
 		// Guard with the auth session when the auth plugin is present. The
 		// Feedback SDK's public submit endpoint is mounted separately below.
 		if s.auth != nil && s.identity == nil {
@@ -291,6 +294,17 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// noStoreMe marks every answer on GET /api/autopilot/me, whatever the status and
+// whoever produces it, as never cacheable. Other routes are untouched.
+func noStoreMe(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/api/autopilot/me") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
