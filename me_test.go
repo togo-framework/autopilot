@@ -101,29 +101,43 @@ func TestMePATIsNoneEvenForAnOperatorAccount(t *testing.T) {
 }
 
 // 401 without a usable session or for a deleted account, 503 when the account
-// store cannot be read (not an authentication failure).
+// store cannot be read (not an authentication failure). Every one of them carries
+// Cache-Control: no-store, like the 200, so a shared cache cannot keep an error.
 func TestMeErrorCodes(t *testing.T) {
 	svc, _, h := realAuth(t)
 	_, tok := bearer(t, svc, "codes@example.com", "autopilot:operator")
 
 	for name, token := range map[string]string{"no token": "", "garbage token": "not-a-jwt"} {
-		if code, _, _ := getMe(h, token); code != 401 {
+		code, _, hdr := getMe(h, token)
+		if code != 401 {
 			t.Errorf("%s: /me = %d, want 401", name, code)
 		}
+		wantNoStore(t, name, hdr)
 	}
 	// a valid token for an account that no longer exists
 	ghost, err := svc.IssueToken(auth.Identity{ID: "ghost", Email: "g@example.com", Roles: []string{"autopilot:operator"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code, _, _ := getMe(h, ghost); code != 401 {
+	code, _, hdr := getMe(h, ghost)
+	if code != 401 {
 		t.Errorf("deleted account: /me = %d, want 401", code)
 	}
+	wantNoStore(t, "deleted account", hdr)
 	if _, err := realDB(t).Exec(`ALTER TABLE users RENAME TO users_offline`); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, _ := getMe(h, tok); code != 503 {
+	code, _, hdr = getMe(h, tok)
+	if code != 503 {
 		t.Errorf("store error: /me = %d, want 503", code)
+	}
+	wantNoStore(t, "store error", hdr)
+}
+
+func wantNoStore(t *testing.T, name string, hdr http.Header) {
+	t.Helper()
+	if got := hdr.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("%s: Cache-Control = %q, want no-store", name, got)
 	}
 }
 
