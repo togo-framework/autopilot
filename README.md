@@ -171,7 +171,9 @@ Things to know:
 
 The runner executes Claude Code with file-edit permission and can push branches,
 so it is **opt-in** (`AUTOPILOT_RUNNER=1`) and meant to run where the repo and
-CLI credentials already live. See [SECURITY.md](SECURITY.md).
+CLI credentials already live. See [SECURITY.md](SECURITY.md) and the
+[security model](docs/security-model.md) (draft): until it is approved, do not
+expose Autopilot to users you do not fully trust and do not enable it by default.
 
 ## Status
 

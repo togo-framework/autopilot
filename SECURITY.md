@@ -1,5 +1,8 @@
 # Security policy — togo autopilot
 
+The full threat model, current gaps and the hardening acceptance bar are in
+[docs/security-model.md](docs/security-model.md) (draft, tracked in #1).
+
 Autopilot runs an autonomous agent that **edits code and can push branches**, so
 its threat model is different from a normal plugin. The API/board are safe to run
 anywhere; the **runner** is the privileged part and is off by default.
